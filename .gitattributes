@@ -1,0 +1,3 @@
+# Normalise line endings: LF in the repository and in every working copy.
+# Without this, the checkout platform decides, and a public repo gets both.
+* text=auto eol=lf
