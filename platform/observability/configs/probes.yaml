@@ -1,0 +1,84 @@
+---
+# Probes: measuring the platform from the outside of itself.
+#
+# Everything else here is introspection — a pod saying it is Ready, a scrape
+# succeeding. A probe connects the way a client does, which is the only way to
+# catch the failures where every internal signal is green:
+#
+#   * a route that was never attached, so the name resolves to a default
+#     backend and returns a cheerful 200 for the wrong content;
+#   * a certificate that is Ready as a resource but not the one being served;
+#   * a workload that accepts a TCP connection and never completes a handshake.
+#
+# The in-cluster probes below are shipped because they need no configuration
+# from a fork. The externally-facing ones are the valuable ones, and they are
+# left as a commented example because the hostnames belong to the tenancy
+# layer, not to this one.
+
+# The observability stack probing itself. This is worth having even though the
+# scrapes above cover the same processes: a scrape failing and an HTTP endpoint
+# failing are different facts, and the datasources are what Grafana talks to.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: observability-internal
+  namespace: observability
+spec:
+  jobName: probe-internal
+  interval: 60s
+  module: http_2xx
+  vmProberSpec:
+    url: blackbox-exporter.observability.svc:9115
+    scheme: http
+    path: /probe
+  targets:
+    staticConfig:
+      targets:
+        - http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428/health
+        - http://vmalert-victoria-metrics-k8s-stack.observability.svc:8080/health
+        - http://victoria-logs-single-server.observability.svc:9428/health
+        - http://tempo.observability.svc:3200/ready
+        - http://victoria-metrics-k8s-stack-grafana.observability.svc:80/api/health
+      labels:
+        probe_scope: internal
+---
+# Externally-facing probes.
+#
+# This is the shape to copy. It is commented rather than shipped because a
+# hostname is a fork's own, and a probe against a name that does not exist
+# fails forever — which is worse than no probe, because a permanently red check
+# is one people learn to ignore.
+#
+# Probe from OUTSIDE the mesh of assumptions: point these at the public name,
+# not at the Service, so the answer covers DNS, the load balancer, the proxy,
+# the route and the certificate rather than skipping all five.
+#
+# apiVersion: operator.victoriametrics.com/v1beta1
+# kind: VMProbe
+# metadata:
+#   name: tenant-hostnames
+#   namespace: observability
+# spec:
+#   jobName: probe-external
+#   interval: 60s
+#   module: https_2xx      # fails if TLS is absent or invalid — see the module
+#   vmProberSpec:          # definitions in ../controllers/blackbox-exporter.yaml
+#     url: blackbox-exporter.observability.svc:9115
+#     scheme: http
+#     path: /probe
+#   targets:
+#     staticConfig:
+#       targets:
+#         - https://<a hostname a tenant actually serves>
+#       labels:
+#         probe_scope: external
+#
+# And for a workload that bypasses the HTTP proxy entirely — a long-lived
+# session protocol on its own load balancer port pair has no HTTP endpoint, and
+# is therefore the kind of thing that ends up with no check at all:
+#
+#   module: tcp_connect
+#   targets:
+#     staticConfig:
+#       targets:
+#         - <host>:<port>

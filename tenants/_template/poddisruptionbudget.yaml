@@ -1,0 +1,47 @@
+# What a node drain may do to this tenant.
+#
+# The drains that matter are not the dramatic ones. They are unattended OS
+# patching, a coordinated node upgrade, and the autoscaler removing a node it
+# decided was underused — all of which happen without anyone watching, and all
+# of which evict pods in whatever order the eviction API allows.
+#
+# ---------------------------------------------------------------------------
+# WHY maxUnavailable AND NOT minAvailable
+#
+# `minAvailable: 1` on a workload running a single replica makes that pod
+# permanently unevictable. The drain does not fail loudly; it blocks, retries,
+# and waits — so a node upgrade stops partway through, and the cause is a
+# budget somebody wrote to be careful.
+#
+# `maxUnavailable: 1` cannot deadlock. A single-replica workload is always
+# evictable, and a larger one is drained one pod at a time instead of all at
+# once. It is the weaker guarantee and the one that does not require every
+# tenant to size their replicas correctly before the platform's own
+# maintenance can proceed.
+#
+# WHY AN EMPTY SELECTOR
+#
+# `selector: {}` selects every pod in the namespace. This is not the same as
+# omitting the selector — a null selector selects nothing, and the resulting
+# PDB is an object that exists, reports zero expected pods, and protects
+# nothing. Both forms read as "no selector" at a glance.
+#
+# A namespace-wide budget is a floor, not a substitute for per-workload
+# budgets. A workload with real availability requirements ships its own PDB
+# next to its Deployment, where the replica count it depends on is also
+# declared.
+# ---------------------------------------------------------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tenant
+  namespace: tenant-REPLACE-tenant
+spec:
+  maxUnavailable: 1
+  selector: {}
+  # unhealthyPodEvictionPolicy: AlwaysAllow
+  #
+  # Uncomment on a cluster at v1.27 or later if drains have ever stalled on
+  # this tenant. The default policy refuses to evict a pod that is not Ready,
+  # which means a crash-looping pod can hold a drain open indefinitely: the
+  # budget protects the availability of something that is already unavailable.

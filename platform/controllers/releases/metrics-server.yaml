@@ -1,0 +1,72 @@
+---
+# metrics-server. `kubectl top`, and the resource metrics API that any
+# HorizontalPodAutoscaler reads. Nothing above it works without it, which is
+# why it is platform rather than an add-on.
+#
+# PRECONDITION. The distribution ships its own copy as a packaged component.
+# Two installations fight over one `v1beta1.metrics.k8s.io` APIService and the
+# loser is whichever reconciled last, so the cluster module must be told not to
+# install it (`enable_metrics_server = false`). The platform layer owns this
+# because a component the reconciler cannot see is a component that drifts
+# without anyone being told.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: metrics-server
+  namespace: flux-system
+spec:
+  interval: 12h
+  releaseName: metrics-server
+  targetNamespace: kube-system
+  storageNamespace: kube-system
+  chart:
+    spec:
+      chart: metrics-server
+      # 3.13.1 (application 0.8.1) — highest chart version in
+      # https://kubernetes-sigs.github.io/metrics-server/index.yaml, read
+      # 2026-08-03. Application 0.9.0 exists upstream but has no chart release
+      # yet; the chart is what is pinned, so the chart is what is quoted.
+      version: 3.13.1
+      sourceRef:
+        kind: HelmRepository
+        name: metrics-server
+        namespace: flux-system
+      interval: 24h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  driftDetection:
+    mode: enabled
+  values:
+    # Two replicas and a budget, for the same reason as everything else here:
+    # nodes get drained for unattended patching, and an aggregated API service
+    # with no backend makes every `kubectl top` and every autoscaling decision
+    # fail rather than degrade.
+    replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+
+    # NO `--kubelet-insecure-tls`.
+    #
+    # It is in most installation guides because on many distributions the
+    # kubelet serves a self-signed certificate. On k3s the kubelet's serving
+    # certificate is signed by the cluster CA that metrics-server already
+    # trusts — the distribution's own packaged copy runs without the flag,
+    # which is the evidence. Adding it defensively would switch off a
+    # verification that works, and nothing would ever report that it had.
+    defaultArgs:
+      - --cert-dir=/tmp
+      - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+      - --kubelet-use-node-status-port
+      - --metric-resolution=15s
+
+    metrics:
+      enabled: true
+    serviceMonitor:
+      # Left to the observability layer, which owns that definition. See the
+      # same note in cert-manager.yaml.
+      enabled: false

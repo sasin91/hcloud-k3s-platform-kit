@@ -1,0 +1,48 @@
+---
+# Which autoscaler pool wins when more than one could satisfy a pending pod.
+#
+# SHIPPED EVEN THOUGH ONLY ONE POOL IS ACTIVE. The kit's default is a single
+# pool on the cost-optimised line, with a cross-location fallback pool declared
+# and commented out in the infrastructure layer. This ConfigMap exists so that
+# enabling the fallback is one uncommented block and nothing else — the
+# ordering is already correct and already in the repository, rather than being
+# a second thing to remember at the moment capacity is short.
+#
+# It is also the answer to the obvious objection to a fallback: the fallback
+# line costs roughly four times per core. With this in place the expensive pool
+# is only ever chosen when the cheap one cannot provide the node, which is what
+# insurance is supposed to cost. Both pools idle at zero nodes, so a declared
+# and unused fallback costs nothing at all.
+#
+# HOW IT IS WIRED. Three things have to agree, and only one of them is here:
+#
+#   1. The autoscaler must run with `--expander=priority`. That is an argument
+#      in the infrastructure layer (`cluster_autoscaler_extra_args`). Without
+#      it this ConfigMap is read by nobody and nothing reports that.
+#   2. This object must be named exactly `cluster-autoscaler-priority-expander`
+#      in `kube-system`. The autoscaler's role grants access to that one name;
+#      a differently named copy is not read and not refused either.
+#   3. The patterns below must match the node group names the autoscaler
+#      actually sees.
+#
+# THE NAME IS NOT THE POOL NAME. The provider integration names each node group
+# by the cluster prefix concatenated with the pool name — a pool called
+# `autoscaled` in a cluster called `k3s` is the group `k3s-autoscaled`. A
+# pattern written as the bare pool name matches nothing, and a pattern that
+# matches nothing is silently ignored: no error, no event, and the expander
+# falls back to picking a group at random. That failure is invisible until the
+# bill or the outage.
+#
+# Higher number wins. Values are regular expressions, anchored deliberately so
+# that `autoscaled` does not also match `autoscaled-fallback`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-autoscaler-priority-expander
+  namespace: kube-system
+data:
+  priorities: |-
+    50:
+      - .*-autoscaled$
+    10:
+      - .*-autoscaled-fallback$

@@ -1,0 +1,42 @@
+# The tenants that exist. One entry per tenant directory.
+#
+# THIS FILE IS LOAD-BEARING AND ITS ABSENCE IS NOT OBVIOUS.
+#
+# The cluster's tenants stage applies ./tenants. With no kustomization.yaml
+# here, Flux generates one by scanning the directory recursively — which
+# includes _template/, and would apply a namespace literally called
+# `tenant-REPLACE-tenant`, together with the placeholder secrets in the example
+# files.
+#
+# An explicit list is what keeps the template a template. It is also the single
+# place where "this tenant exists" is declared, which is what makes offboarding
+# a merge: remove the entry, and the tenants stage prunes the namespace.
+#
+# DO NOT DELETE THIS FILE BECAUSE IT LOOKS EMPTY. An empty resources list is not
+# a no-op — its presence is what stops the fallback scan. Deleting it restores
+# exactly the failure described above, silently, and the diff that does it looks
+# like tidying.
+#
+# The underscore in `_template` is a naming convention for humans, not a
+# mechanism. Nothing in the reconciliation treats that prefix specially, so it
+# excludes nothing on its own. This list is the mechanism.
+#
+# Read that last sentence twice before removing an entry. It deletes the
+# namespace and everything in it. The backup generated with the tenant is what
+# makes that survivable, and the restore path is one restic command — but the
+# repository password lives in the tenant's own secret, which is in the
+# directory being deleted. Keep a copy elsewhere.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources: []
+  # - acme
+  #
+  # Add the directory name, not a file. Each tenant directory carries its own
+  # kustomization.yaml listing its guarantees.
+  #
+  # _template is never listed. It is the source of copies, not a tenant.
+
+# No tenants yet is a correct steady state. The kit ships no example tenant:
+# the template is the demonstration, and a workload occupying a namespace shows
+# nothing the template does not already state.

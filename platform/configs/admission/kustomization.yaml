@@ -1,0 +1,12 @@
+# Admission policies. Core API machinery only — no policy engine, no operator.
+#
+# This belongs in the configs stage rather than the controllers stage: it
+# depends on the Gateway API definitions existing, and a policy applied before
+# them binds to a resource the API server does not know about yet. Ordering is
+# a correctness property, not a convenience — a resource whose definition has
+# not been established fails, retries, and eventually succeeds, which reads as
+# flakiness rather than as a missing dependency edge.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - httproute-hostname-authorization.yaml

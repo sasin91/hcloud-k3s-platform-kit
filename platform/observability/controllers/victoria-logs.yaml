@@ -1,0 +1,146 @@
+---
+# Logs: VictoriaLogs, fed by Vector as a DaemonSet.
+#
+# Vector tails every container log on every node and ships it to VictoriaLogs.
+# The Vector chart is a pinned dependency of this chart (vector 0.57.0, locked
+# in victoria-logs-single 0.13.9's Chart.lock), so pinning this release pins the
+# shipper too.
+#
+# READ THIS BEFORE DECIDING WHO CAN SEE THE DASHBOARD.
+#
+# What is in here is not "logs". It is request paths, client addresses, user
+# identifiers, session tokens in query strings, stack traces containing
+# connection strings, and — routinely, by accident — credentials somebody
+# logged while debugging and never removed. Anyone who has grepped their own
+# logs for a secret and found one already knows this is not hypothetical.
+#
+# That is why the dashboard in front of this is a security boundary and not a
+# convenience, and it is most of the argument for why Grafana has no route.
+#
+# There is deliberately NO redaction transform in the pipeline below. A regex
+# denylist over log bodies catches the pattern you thought of and gives you
+# permission to stop thinking about the ones you did not — it converts an
+# understood exposure into a believed-solved one. The boundary is access to the
+# store, not a filter on the way in. If you do add redaction, add it in the
+# application that emits the line.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: victoria-logs-single
+  namespace: observability
+spec:
+  interval: 1h
+  timeout: 15m
+  # The VMServiceScrape and dashboard this chart creates need CRDs that the
+  # metrics stack installs. Ordering is a correctness property, not a
+  # convenience: without this, the first apply fails, retries, and eventually
+  # succeeds, which reads as flakiness rather than as a missing edge.
+  dependsOn:
+    - name: victoria-metrics-k8s-stack
+  chart:
+    spec:
+      chart: victoria-logs-single
+      version: "0.13.9"
+      sourceRef:
+        kind: HelmRepository
+        name: victoriametrics
+        namespace: observability
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    server:
+      enabled: true
+      # NOT EXPOSED. Same reasoning as the dashboard: this is the raw store
+      # that sits behind it, and its query API has no authentication of its
+      # own.
+      ingress:
+        enabled: false
+      route:
+        enabled: false
+
+      # RETENTION AND SIZING.
+      #
+      # Two limits, not one, and the second is the important one:
+      #
+      #   retentionPeriod       bounds how OLD data may be.
+      #   retentionDiskSpaceUsage bounds how MUCH there may be.
+      #
+      # Time-based retention alone does not bound disk. One misbehaving
+      # workload logging a stack trace per request will fill a fortnight's
+      # volume in an afternoon, and then the store stops — on a single-writer
+      # volume with no snapshots, on a provider whose block storage cannot be
+      # grown without interrupting the pod holding it. The disk limit is what
+      # turns that from an outage into old logs being dropped.
+      #
+      # Keep the disk limit comfortably under the volume size. VictoriaLogs
+      # needs headroom to merge parts.
+      retentionPeriod: "14d"
+      retentionDiskSpaceUsage: "40GB"
+
+      persistentVolume:
+        enabled: true
+        size: 50Gi
+        accessModes:
+          - ReadWriteOnce
+        # storageClassName intentionally unset — see the note in
+        # ./victoria-metrics-k8s-stack.yaml. This layer does not hardcode a
+        # class name owned by another layer.
+
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          memory: 2Gi
+
+      # Native VM scrape object. The chart also offers a ServiceMonitor; it is
+      # left off because the Prometheus converter is disabled cluster-wide.
+      vmServiceScrape:
+        enabled: true
+      serviceMonitor:
+        enabled: false
+
+    dashboards:
+      enabled: true
+
+    podDisruptionBudget:
+      # A single replica writing to a single-writer volume cannot be made
+      # highly available by a budget. Left off honestly rather than set to
+      # minAvailable: 1 so a dashboard shows a green tick.
+      enabled: false
+
+    # ------------------------------------------------------------------
+    # Vector — log shipper, one pod per node
+    # ------------------------------------------------------------------
+    vector:
+      enabled: true
+      # Agent means DaemonSet: one pod per node, reading the node's container
+      # log directory. If it is not running on a node, that node's logs are not
+      # being collected and nothing else reports it — which is why
+      # ../configs/rules-platform.yaml alerts on the DaemonSet's ready count
+      # rather than on its pods being healthy.
+      role: Agent
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+      # Tolerate everything. A shipper that skips tainted nodes collects logs
+      # from the nodes that are fine and misses the ones that are not, which is
+      # precisely backwards.
+      tolerations:
+        - operator: Exists
+      service:
+        enabled: false
+      # Vector's own metrics are exported on the `prom-exporter` container port
+      # by the chart's default config. There is no Service, so they are scraped
+      # with a VMPodScrape in ../configs/scrapes.yaml. The chart's PodMonitor is
+      # left off: it is a Prometheus-operator CRD this cluster does not have.
+      podMonitor:
+        enabled: false

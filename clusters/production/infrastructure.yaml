@@ -1,0 +1,98 @@
+# Layer 1 of 4 — infrastructure: the things that install custom resource
+# definitions and the controllers that serve them.
+#
+# Contents belong here if something else cannot be expressed until this has
+# been applied: the certificate controller, the Gateway API definitions, the
+# database operator, storage classes.
+#
+# NOTE ON THE PATH, because it looks wrong and is not. This layer reconciles
+# ./platform/controllers. The directory named ./infrastructure at the
+# repository root is OpenTofu — it creates the cluster, it runs before Flux
+# exists, and reconciling it would mean pointing a Kubernetes applier at HCL.
+# It is deliberately outside this graph.
+#
+# Chain: flux-system -> INFRASTRUCTURE -> platform -> observability -> tenants
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure
+  namespace: flux-system
+spec:
+  # ---------------------------------------------------------------------------
+  # ORDERING IS A CORRECTNESS PROPERTY, NOT A CONVENIENCE.
+  #
+  # A resource whose custom definition has not been established yet fails,
+  # retries on the next interval, and eventually succeeds. Every symptom of a
+  # missing dependency edge therefore looks like flakiness — which is how
+  # ordering bugs survive for years, and why every edge in this graph is
+  # declared rather than left to retry.
+  #
+  # This is the first layer, so it depends only on the root, which the root's
+  # own reconciliation already guarantees. The edge is stated in the three
+  # files that follow.
+  # ---------------------------------------------------------------------------
+
+  # Platform-admin-owned. Required: --default-service-account=default means an
+  # unspecified reconciliation gets a powerless identity. See
+  # flux-system/lockdown-patches.yaml.
+  serviceAccountName: kustomize-controller
+
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    # No namespace field: --no-cross-namespace-refs=true forbids referencing a
+    # source outside this Kustomization's own namespace.
+
+  path: ./platform/controllers
+
+  interval: 30m0s
+  retryInterval: 2m0s
+
+  # ---------------------------------------------------------------------------
+  # PRUNING IS ON, HERE AND EVERYWHERE.
+  #
+  # It is most of why Flux was chosen. An apply-only pipeline never removes
+  # anything: resources deleted from the repository keep running indefinitely,
+  # and a resource nobody remembers is a resource nobody patches. The ones that
+  # survive deletion are disproportionately the ones somebody deliberately
+  # tried to remove.
+  #
+  # It is safe here because a cluster built from this kit is born clean —
+  # everything in it arrived through this graph, so "not in git" and "should
+  # not exist" mean the same thing.
+  #
+  # It is dangerous in exactly one situation: pointing a pruning reconciler at
+  # a cluster with accumulated state nobody has inventoried. Adopting an
+  # existing cluster means auditing what is running before this is switched on,
+  # not switching it off and forgetting. Disabling it anywhere requires a
+  # recorded reason, which continuous integration checks.
+  # ---------------------------------------------------------------------------
+  prune: true
+
+  # ---------------------------------------------------------------------------
+  # A reconciler that applies without waiting has only proven that the API
+  # server accepted the YAML. wait: true holds this Kustomization NotReady
+  # until every object it applied reports healthy, which is what makes the
+  # dependsOn edges below mean "the controllers are running" rather than "the
+  # manifests were accepted".
+  #
+  # No explicit healthChecks list: when wait is true it is ignored, and a list
+  # naming resources by hand goes stale silently as the layer's contents
+  # change.
+  #
+  # 10m covers CRD establishment plus controller rollout on a cold cluster,
+  # where images are pulled for the first time.
+  # ---------------------------------------------------------------------------
+  wait: true
+  timeout: 10m0s
+
+  # Encrypted secrets are decrypted at apply time by kustomize-controller. The
+  # sops-age secret is the age private key, and it is the one secret in this
+  # system created by hand — see clusters/README.md. Nothing here can be
+  # applied before it exists, which is the correct dependency direction:
+  # infrastructure carries provider credentials and registry pull secrets.
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age

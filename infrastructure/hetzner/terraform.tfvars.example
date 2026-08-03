@@ -1,0 +1,105 @@
+# Copy to terraform.tfvars and fill in.
+#
+# terraform.tfvars MUST be gitignored, and this file must not be — so every
+# value below is an obvious placeholder and several of them are deliberately
+# invalid, so that a copied-but-unedited file fails loudly instead of quietly
+# working.
+#
+# Secrets are better supplied from the environment than from a file that lives
+# next to your state:
+#
+#   export TF_VAR_hcloud_token='…'
+#   export TF_VAR_object_storage_access_key='…'
+#   export TF_VAR_object_storage_secret_key='…'
+#   export TF_VAR_state_passphrase='…'
+#
+# state_passphrase MUST come from the environment or a tfvars file that exists
+# before `tofu init`: encryption is configured before any state is read, so a
+# prompt is too late.
+
+# ---------------------------------------------------------------------------
+# Credentials
+# ---------------------------------------------------------------------------
+
+# Project > Security > API Tokens, Read & Write.
+hcloud_token = "REPLACE_WITH_HCLOUD_TOKEN"
+
+# At least 16 characters. Losing this loses the ability to read your own state.
+# Store it wherever you store the age key — same class of secret, same fate.
+#
+# The placeholder below is deliberately too short to pass validation. A shipped
+# placeholder that happens to be long enough is a working default, and the first
+# thing that works is what convinces everyone the pattern is fine.
+state_passphrase = "CHANGE_ME"
+
+ssh_public_key = "ssh-ed25519 AAAAREPLACEME operator@example"
+
+# Only needed if the matching private key is not loaded in an ssh-agent.
+# ssh_private_key = "REPLACE_OR_LEAVE_UNSET"
+
+# ---------------------------------------------------------------------------
+# Object storage
+#
+# Both buckets come from scripts/bootstrap-buckets.sh, which must run before
+# the first `tofu init`. The access key itself is created by hand in the
+# provider console — the provider CLI has no object-storage commands, so that
+# one step cannot be automated and no flag exists to find.
+# ---------------------------------------------------------------------------
+
+object_storage_access_key = "REPLACE_WITH_OBJECT_STORAGE_ACCESS_KEY"
+object_storage_secret_key = "REPLACE_WITH_OBJECT_STORAGE_SECRET_KEY"
+
+# Bare host, no scheme — k3s rejects a URL here.
+object_storage_endpoint_host = "fsn1.your-objectstorage.com"
+object_storage_region        = "fsn1"
+
+# The SNAPSHOTS bucket. Never the state bucket: this one carries an expiry rule,
+# and an expiry rule anywhere near state history destroys the recovery path.
+etcd_snapshot_bucket = "example-etcd-snapshots"
+
+# The STATE bucket cannot be set here. A backend block takes no variables, so it
+# is a literal in versions.tf — change it there, and change the endpoint there
+# too if you change it above.
+
+# ---------------------------------------------------------------------------
+# Cluster shape
+#
+# Every server_type below: CHECK THAT IT IS CURRENTLY AVAILABLE IN ITS LOCATION,
+# not merely supported. Supported-but-unavailable validates, plans and applies
+# cleanly, then fails when you need to scale. Re-check on a schedule.
+# ---------------------------------------------------------------------------
+
+cluster_name   = "platform"
+network_region = "eu-central"
+
+control_plane_location    = "fsn1"
+control_plane_server_type = "cx33"
+
+agent_location    = "fsn1"
+agent_server_type = "cx43"
+agent_count       = 2
+
+# ---------------------------------------------------------------------------
+# Autoscaler
+# ---------------------------------------------------------------------------
+
+autoscaler_location    = "fsn1"
+autoscaler_server_type = "cx43"
+autoscaler_max_nodes   = 5
+
+# Only consumed once the fallback pool in main.tf is uncommented. Must be a
+# different location from autoscaler_location, or it is not insurance against
+# anything. Treat it as unproven until it has provisioned a node once.
+autoscaler_fallback_location    = "nbg1"
+autoscaler_fallback_server_type = "ccx23"
+
+# ---------------------------------------------------------------------------
+# etcd snapshots
+#
+# k3s prunes what it knows about; the bucket lifecycle rule is the backstop for
+# everything it forgets. Keep the bucket rule strictly longer than what this
+# retention implies, or the backstop deletes live snapshots.
+# ---------------------------------------------------------------------------
+
+etcd_snapshot_schedule_cron = "0 */6 * * *"
+etcd_snapshot_retention     = 20

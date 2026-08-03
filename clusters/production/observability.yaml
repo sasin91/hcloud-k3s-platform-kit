@@ -1,0 +1,62 @@
+# Layer 3 of 4 — observability: metrics, logs, traces and the dashboard.
+#
+# A layer of its own rather than part of platform, for two reasons. It is the
+# heaviest thing in the cluster and the slowest to become healthy, so it should
+# not set the timeout for configuration that applies in seconds. And it is the
+# layer most likely to be modified or removed by a fork, which is easier when
+# the edge is explicit.
+#
+# It is placed BEFORE tenants deliberately: alerting that starts after the
+# workloads it is supposed to watch has a window in which nothing is observed,
+# and that window is exactly when a first install goes wrong.
+#
+# Chain: flux-system -> infrastructure -> platform -> OBSERVABILITY -> tenants
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: observability
+  namespace: flux-system
+spec:
+  # Depends on platform, not on infrastructure directly. The stack needs both
+  # its operators' definitions (layer 1) and the storage class and certificate
+  # issuer (layer 2), and dependsOn is transitive through platform. Declaring
+  # only the nearest edge keeps the graph a chain rather than a mesh.
+  dependsOn:
+    - name: platform
+
+  # Platform-admin-owned. Required by --default-service-account=default.
+  serviceAccountName: kustomize-controller
+
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+
+  path: ./platform/observability
+
+  interval: 30m0s
+  retryInterval: 2m0s
+
+  # Safe because a cluster built from this kit is born clean. See
+  # infrastructure.yaml.
+  #
+  # Worth stating for this layer specifically: pruning a monitoring component
+  # deletes its persistent volume claim only if the claim is in git. Retention
+  # is a storage decision made where the claim is declared, not here.
+  prune: true
+
+  # 15m, the longest in the graph. StatefulSets wait on volume provisioning
+  # and attachment, and the first pull of a metrics or trace store image is
+  # large. A shorter timeout here does not make anything faster; it makes a
+  # healthy first install report failure.
+  wait: true
+  timeout: 15m0s
+
+  # The dashboard's administrative credential lives here, encrypted. It ships
+  # with anonymous access off and no public route: an observability dashboard
+  # is a query interface over every datasource the platform has, not a set of
+  # charts, so read access to it is read access to everything ever recorded.
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age

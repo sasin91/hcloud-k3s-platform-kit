@@ -1,0 +1,30 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Everything here needs a custom resource definition, a controller, or both, to
+# already exist. That is the entire reason this directory is separate from
+# platform/controllers/ rather than being one big folder sorted alphabetically.
+#
+# The cluster's reconciliation must therefore declare that this stage depends on
+# the controllers stage and waits for it to be healthy — not merely applied. See
+# platform/README.md for the shape of that declaration; the file that carries it
+# lives under clusters/, because a fork names its cluster once.
+resources:
+  # Needs cert-manager's definitions and its webhook to be answering.
+  - cluster-issuers.yaml
+  # Needs the Gateway API definitions and the GatewayClass the ingress creates.
+  - gateway.yaml
+  # Needs the Plan definition from platform/controllers/crds/.
+  - k3s-upgrade-plans.yaml
+  # These two need nothing but the API server. They live here anyway, because
+  # both are inert until something the controllers stage installed reads them —
+  # the CSI driver for one, the autoscaler for the other — and splitting them
+  # out by API dependency rather than by real dependency would be a distinction
+  # that helps nobody.
+  - storageclass-retain.yaml
+  - cluster-autoscaler-priority-expander.yaml
+  # Which hostnames a tenant's routes may claim. Core admission machinery, but
+  # it names a resource whose definition the controllers stage installs, so it
+  # belongs on this side of the edge.
+  - admission

@@ -1,0 +1,102 @@
+# Layer 4 of 4 — tenants: one namespace per tenant, generated with its
+# guarantees.
+#
+# This Kustomization is the ONBOARDING path, not the tenant workload path. It
+# applies what a platform administrator owns: the namespace, its quota, limit
+# range, network policy, disruption budget, backup job, pod security level, and
+# the tenant's service account with a namespace-scoped role binding. It also
+# applies, per tenant, the GitRepository and Kustomization through which that
+# tenant's own workloads arrive.
+#
+# Chain: flux-system -> infrastructure -> platform -> observability -> TENANTS
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tenants
+  namespace: flux-system
+spec:
+  # Last in the chain. A tenant workload applied before its ingress gateway,
+  # certificate issuer, storage class or database operator exists fails,
+  # retries and eventually succeeds — which reads as a flaky first install
+  # rather than as the missing edge it is.
+  dependsOn:
+    - name: observability
+
+  # ---------------------------------------------------------------------------
+  # PLATFORM-ADMIN-OWNED, AND THIS IS THE ONE PLACE THAT DISTINCTION IS EASY TO
+  # GET WRONG.
+  #
+  # This Kustomization creates namespaces and role bindings, so it must be
+  # privileged. Naming kustomize-controller here is correct.
+  #
+  # The Kustomizations it CREATES must not be. Each per-tenant Kustomization
+  # lives in the tenant's own namespace and must name that tenant's service
+  # account, so the tenant's manifests are applied with the tenant's
+  # permissions and nothing more. That is what makes a namespace a privilege
+  # boundary instead of a naming convention. Continuous integration fails the
+  # build if any tenant reconciliation omits a service account.
+  #
+  # Two consequences of the lockdown flags that the tenant template must
+  # respect, because both fail in ways that point somewhere else:
+  #
+  #   - --no-cross-namespace-refs=true means a tenant Kustomization CANNOT
+  #     reference the flux-system GitRepository. Each tenant namespace needs
+  #     its own source object. A tenant that references flux-system is refused,
+  #     and the error names the source rather than the flag.
+  #
+  #   - Flux impersonates the named account in the Kustomization's OWN
+  #     namespace. A tenant Kustomization placed in flux-system that names a
+  #     tenant account is therefore not a tenant boundary at all; it looks for
+  #     an account of that name in flux-system.
+  # ---------------------------------------------------------------------------
+  serviceAccountName: kustomize-controller
+
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+
+  # ---------------------------------------------------------------------------
+  # ./tenants MUST CONTAIN ITS OWN kustomization.yaml, ENUMERATING THE TENANTS
+  # THAT ARE ENABLED.
+  #
+  # Where a directory has no kustomization.yaml, kustomize-controller generates
+  # one by scanning, and that scan adds every sub-directory that has a
+  # kustomization.yaml of its own — including ./tenants/_template, which is not
+  # a tenant. The template carries unreplaced tokens, so what gets applied is a
+  # namespace literally named `tenant-REPLACE-tenant`, complete with quota,
+  # policy and a backup job. It applies cleanly. Nothing reports a problem.
+  #
+  # An explicit list is also how a tenant is offboarded: remove the line, and
+  # pruning removes the namespace.
+  # ---------------------------------------------------------------------------
+  path: ./tenants
+
+  interval: 30m0s
+
+  # Longer than the other layers. A tenant that is not yet ready is usually
+  # waiting on something real — a volume, a database, a certificate — and
+  # retrying every two minutes adds load without adding information.
+  retryInterval: 5m0s
+
+  # Safe because a cluster built from this kit is born clean. See
+  # infrastructure.yaml.
+  #
+  # Read this one carefully before adopting an existing cluster: removing a
+  # tenant directory here deletes that tenant's namespace and everything in it.
+  # That is the intended behaviour — offboarding should be a merge — but it is
+  # also the largest blast radius in the repository. The backup that makes it
+  # survivable is generated with the tenant, in the same template.
+  prune: true
+
+  # 10m: namespace-scoped objects apply quickly, but the tenant's first
+  # workload pulls an image and may wait on a volume.
+  wait: true
+  timeout: 10m0s
+
+  # Tenant secrets — database credentials, the backup repository password —
+  # live encrypted alongside the tenant that owns them.
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age

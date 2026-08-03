@@ -1,0 +1,33 @@
+# Never commit real variable values. The example file is committed; this is not.
+# terraform.tfvars carries the object-storage credentials and the state
+# passphrase — the passphrase in particular is the key every encrypted secret
+# in this repository is protected by.
+*.tfvars
+!*.tfvars.example
+
+# State should never be local. If these appear, the backend is not configured,
+# and a configuration that cannot manage what it built is worse than none.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl.bak
+crash.log
+crash.*.log
+
+# The age private key. This is the one secret applied by hand and the one that
+# cannot be encrypted; everything else in this repository is encrypted to it.
+# Committing it makes every encrypted file in the history plaintext.
+*.agekey
+age.key
+key.txt
+
+# Kubeconfigs emitted by the node layer.
+*kubeconfig*
+!*kubeconfig*.example
+
+# Local tooling
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,32 @@
+---
+# Namespaces for the platform components that do not create their own.
+# (system-upgrade-controller creates `system-upgrade` itself; metrics-server
+# goes into `kube-system`, where the rest of the distribution's control-plane
+# add-ons already live.)
+#
+# Pod Security admission is set to `restricted` on both, which is the strictest
+# built-in level. Both components run non-root with all capabilities dropped and
+# a RuntimeDefault seccomp profile under their charts' own defaults, so this
+# costs nothing today. It is set anyway, because a label is checked by the API
+# server on every pod creation while a claim in a README is checked by nobody —
+# and because the next chart upgrade that quietly relaxes a security context
+# should fail loudly here rather than pass silently.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

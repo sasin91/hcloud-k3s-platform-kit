@@ -1,0 +1,116 @@
+---
+# Traces: Tempo, single binary, local block storage.
+#
+# Traces are the third datasource, and the one people underestimate hardest
+# when deciding who may reach the dashboard. A trace store is the architecture
+# diagram nobody wrote down: service names, call graphs, database statements,
+# argument shapes, timings, and which internal service talks to which. Read
+# access to it is a free reconnaissance pass over the whole platform.
+#
+# Single binary rather than the distributed chart: the distributed topology is
+# five or six deployments plus a memberlist ring, and it exists to scale
+# ingestion beyond what one process can take. That is not this cluster's
+# problem, and orchestration does not confer scalability — replicating a
+# component does not increase the capacity of a store bounded by one disk.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tempo
+  namespace: observability
+spec:
+  interval: 1h
+  timeout: 15m
+  chart:
+    spec:
+      chart: tempo
+      # The chart of the same name in grafana/helm-charts is deprecated: it was
+      # migrated to grafana-community in January 2026 and now only carries a
+      # deprecation notice. Pinning the abandoned one would have worked, which
+      # is exactly how a dependency stops being maintained without anybody
+      # noticing.
+      version: "2.2.3"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana-community
+        namespace: observability
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    replicas: 1
+    tempo:
+      # Do not report the shape of this deployment to a third party.
+      reportingEnabled: false
+
+      # RETENTION AND SIZING.
+      #
+      # Traces get the shortest retention of the three datasources, on purpose.
+      # They are the highest-volume and the least useful when old: a trace
+      # answers "why was this request slow last Tuesday", and nobody asks that
+      # about last month. Three days is enough to cover a weekend incident.
+      #
+      # Note what is NOT available here: Tempo's local backend enforces
+      # retention by block age only. There is no disk-usage ceiling equivalent
+      # to the one VictoriaLogs has. A traffic spike therefore fills this
+      # volume, and the volume is single-writer with no snapshots and cannot be
+      # grown without interrupting the pod. Size for peak, not for average, and
+      # if the sampling rate goes up, revisit this number in the same change.
+      retention: 72h
+
+      storage:
+        trace:
+          backend: local
+          local:
+            path: /var/tempo/traces
+          wal:
+            path: /var/tempo/wal
+
+      # Receivers are left at the chart's defaults, which enable OTLP and the
+      # four Jaeger protocols, and expose a Zipkin port besides. This is not an
+      # endorsement of all of them: removing a receiver key here makes the
+      # chart's own port template dereference a nil map and fail to render, so
+      # narrowing the protocol set through values is not actually available.
+      # Narrow it at the network layer instead — the Service is ClusterIP and
+      # nothing routes to it.
+      #
+      # Point instrumentation at OTLP: tempo.observability.svc:4317 (gRPC) or
+      # :4318 (HTTP).
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          memory: 2Gi
+
+    persistence:
+      enabled: true
+      size: 20Gi
+      accessModes:
+        - ReadWriteOnce
+      # storageClassName intentionally unset — see the note in
+      # ./victoria-metrics-k8s-stack.yaml.
+
+    # NOT EXPOSED. tempo-query would add a second UI with no authentication in
+    # front of it; Tempo is reached through the Grafana datasource, which is
+    # itself reached through a port-forward.
+    tempoQuery:
+      enabled: false
+      ingress:
+        enabled: false
+
+    # The chart ships a Prometheus-operator ServiceMonitor. It is off because
+    # the operator's Prometheus converter is disabled cluster-wide; the
+    # equivalent native object lives in ../configs/scrapes.yaml.
+    serviceMonitor:
+      enabled: false
+
+    securityContext:
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      runAsNonRoot: true

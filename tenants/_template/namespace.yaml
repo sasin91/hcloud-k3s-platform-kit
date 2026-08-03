@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-REPLACE-tenant
+  labels:
+    # The managed marker. Every piece of automation in this kit keys on it and
+    # refuses to touch a namespace that does not carry it: the tenant coverage
+    # check, the backup reporting, and the hostname admission binding in
+    # platform/configs/admission.
+    #
+    # It is also the anti-tenant guard, read in the other direction. A
+    # namespace that is not labelled is out of scope by construction, so
+    # kube-system, flux-system and the platform's own namespaces are protected
+    # by never carrying the label rather than by a list of exceptions that
+    # somebody has to remember to extend.
+    #
+    # The label is platform-owned. The tenant's Role (rbac.yaml) grants no verb
+    # on namespaces, so a tenant cannot relabel itself out of the admission
+    # binding or into another tenant's automation.
+    platform.example.com/managed: tenant
+    platform.example.com/tenant: REPLACE-tenant
+
+    # Pod Security admission. Enforced, and also audited and warned so that a
+    # workload which would break under enforcement is visible before anyone
+    # tries to raise the level.
+    #
+    # The versions are pinned rather than set to `latest` on purpose. The
+    # restricted profile gains checks across releases; `latest` means a cluster
+    # upgrade can start rejecting a workload that was admitted yesterday, with
+    # no change in this repository to point at. Bumping these is a deliberate
+    # act with its own diff. Keep them at or below the cluster's minor version.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.33
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.33
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.33
+  annotations:
+    # The hostnames this tenant may claim. Read by the ValidatingAdmissionPolicy
+    # in platform/configs/admission: an HTTPRoute whose hostnames fall outside
+    # this list is rejected at admission.
+    #
+    # Format: comma separated, no whitespace, no scheme, no trailing dot. An
+    # entry authorises the domain itself and everything under it, so
+    # `example.com` covers `www.example.com` and `*.example.com` but not
+    # `notexample.com`.
+    #
+    # A namespace with no entry here may claim no hostnames at all. That is the
+    # intended failure direction: a missing declaration blocks routing, it does
+    # not open it.
+    platform.example.com/domains: "REPLACE-domains"

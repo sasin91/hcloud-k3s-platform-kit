@@ -1,0 +1,195 @@
+---
+# The platform Gateway. One object, owned by the platform, that every tenant
+# route attaches to.
+#
+# This split is the tenancy model, not a side effect of it. The platform owns
+# the Gateway — the addresses, the ports, the certificates, and which
+# namespaces may attach anything at all. Tenants own HTTPRoutes in their own
+# namespaces. Neither can be edited by the other, and the boundary is expressed
+# in the routing API itself rather than maintained in a document beside it.
+#
+# TWO MECHANISMS THAT ARE ROUTINELY CONFUSED, because both are described as
+# "cross-namespace permission":
+#
+#   allowedRoutes  — decides which namespaces may attach a Route to a listener.
+#                    It lives on the listener, and the platform sets it. This is
+#                    what governs route attachment.
+#   ReferenceGrant — decides whether an object may reference an object in
+#                    another namespace: a Route's backendRef to a Service
+#                    elsewhere, or a listener's certificateRef to a Secret
+#                    elsewhere. It lives in the namespace being referenced, and
+#                    that namespace's owner writes it.
+#
+# A ReferenceGrant does not let anyone attach a route, and allowedRoutes does
+# not let a route reach a Service in another namespace. Assuming either covers
+# the other leaves one of the two open.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: platform
+  namespace: traefik
+  annotations:
+    # cert-manager watches for this annotation, reads the listeners' hostnames,
+    # and creates a Certificate for the Secret each listener's certificateRef
+    # names. Nothing else has to be written for a certificate to exist.
+    #
+    # START ON STAGING. Switch to `letsencrypt` once a certificate has actually
+    # been issued here — the production authority's weekly limit per registered
+    # domain is spent by failed attempts too, and a hostname that does not
+    # resolve yet fails in a loop that looks like patience.
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+spec:
+  gatewayClassName: traefik
+  listeners:
+    # -----------------------------------------------------------------------
+    # Port 80. Two jobs, and no tenant traffic.
+    # -----------------------------------------------------------------------
+    # THE PORT NUMBER IS NOT 80. A Gateway listener's port is the port the
+    # proxy process listens on, which the chart declares as 8000 and the
+    # Service maps 80 onto. Writing 80 here produces a listener that matches no
+    # entrypoint, attaches nothing, and reports nothing obviously wrong.
+    - name: http
+      protocol: HTTP
+      port: 8000
+      allowedRoutes:
+        namespaces:
+          # This namespace only. The two routes that belong here are the
+          # redirect below and the short-lived challenge routes cert-manager
+          # creates while solving HTTP-01 — which land in this namespace,
+          # because that is where the Gateway is. Tenants have no reason to
+          # serve anything on port 80 and are not permitted to.
+          from: Same
+    # -----------------------------------------------------------------------
+    # Port 443.
+    # -----------------------------------------------------------------------
+    - name: https
+      protocol: HTTPS
+      port: 8443
+      # CHANGE ME. One listener serves one hostname, so onboarding a tenant
+      # hostname means adding a listener here — a platform action, deliberately.
+      #
+      # This does not scale to many tenants, and the honest answer to that is
+      # the wildcard listener commented out below, not a workaround. Wildcards
+      # need DNS-01; see cluster-issuers.yaml.
+      hostname: apps.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          # Same namespace as the Gateway, so no ReferenceGrant is involved.
+          # cert-manager creates this Secret; it does not exist until the first
+          # certificate is issued, and the listener stays Programmed=False until
+          # then. That is the expected first-boot state, not a fault.
+          - name: platform-tls
+            kind: Secret
+            group: ""
+      allowedRoutes:
+        namespaces:
+          # Only namespaces carrying the tenant label may attach. `All` would
+          # mean any namespace in the cluster — including one created by
+          # something that is not the tenant template — can publish on the
+          # platform's addresses.
+          #
+          # This is the same label the hostname admission policy binds on (see
+          # configs/admission/). The two must agree: a namespace that can attach
+          # a route but is outside the policy's binding is one that can claim any
+          # hostname it likes.
+          from: Selector
+          selector:
+            matchLabels:
+              platform.example.com/managed: tenant
+
+    # -----------------------------------------------------------------------
+    # A wildcard listener. Requires DNS-01. Uncomment both halves together.
+    # -----------------------------------------------------------------------
+    # This replaces one-listener-per-hostname with one listener for every
+    # subdomain, which is what makes tenant onboarding a tenant-side action
+    # rather than an edit to this file. The certificate cannot be obtained over
+    # HTTP-01 — that is a property of the ACME protocol, not a configuration —
+    # so a DNS-01 issuer must exist first and this Gateway's annotation must
+    # point at it.
+    #
+    # - name: https-wildcard
+    #   protocol: HTTPS
+    #   port: 8443
+    #   hostname: "*.example.com"
+    #   tls:
+    #     mode: Terminate
+    #     certificateRefs:
+    #       - name: platform-wildcard-tls
+    #         kind: Secret
+    #         group: ""
+    #   allowedRoutes:
+    #     namespaces:
+    #       from: Selector
+    #       selector:
+    #         matchLabels:
+    #           platform.example.com/managed: tenant
+---
+# Redirect everything arriving on port 80 to HTTPS.
+#
+# WHY THIS IS A ROUTE AND NOT AN ENTRYPOINT SETTING. A redirect configured on
+# the proxy's entrypoint rewrites every request on port 80 unconditionally,
+# including `/.well-known/acme-challenge/...`, so certificate issuance fails
+# permanently and looks like a certificate problem rather than a redirect
+# problem. As a route it coexists with issuance: cert-manager's challenge route
+# carries the challenge hostname and an exact path match, and Gateway API
+# resolves conflicts by specificity — a hostname beats no hostname, an exact
+# path beats a prefix — so the challenge is answered and everything else is
+# redirected.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https
+  namespace: traefik
+spec:
+  parentRefs:
+    - name: platform
+      # Attach to the HTTP listener specifically. Without sectionName the route
+      # attaches to every listener it is compatible with, which would put a
+      # redirect-to-HTTPS in front of HTTPS.
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            # 301 rather than 308. 308 is the technically better answer because
+            # it preserves the request method, and the API permits it, but 301
+            # is the status every implementation and every client has handled
+            # for twenty years. Browser traffic on port 80 is overwhelmingly GET.
+            statusCode: 301
+
+# ---------------------------------------------------------------------------
+# ReferenceGrant — what a tenant writes, and when.
+# ---------------------------------------------------------------------------
+# Not needed for the ordinary case. A tenant's HTTPRoute attaching to this
+# Gateway and pointing at a Service in its own namespace needs nothing below;
+# the listener's allowedRoutes selector is the whole permission.
+#
+# It is needed when something crosses a namespace boundary by reference. The
+# grant lives in the namespace that owns the referenced object, and it is
+# written by that namespace's owner — which is the point: the permission is
+# granted by the party giving something up, not claimed by the party taking it.
+#
+# Example, in a namespace whose Service another namespace's route needs to
+# reach. Note `from` names a kind and a namespace but no object name, while
+# `to` may name a specific object — grant to one Service, not to all of them.
+#
+# At bundle v1.6.1 this kind serves both `v1` and `v1beta1` — v1beta1 is still
+# the storage version, so most examples elsewhere show it. Either is accepted.
+#
+# ---
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: ReferenceGrant
+# metadata:
+#   name: allow-route-from-tenant-a
+#   namespace: shared-backend
+# spec:
+#   from:
+#     - group: gateway.networking.k8s.io
+#       kind: HTTPRoute
+#       namespace: tenant-a
+#   to:
+#     - group: ""
+#       kind: Service
+#       name: the-one-service-being-shared

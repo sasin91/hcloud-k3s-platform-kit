@@ -1,0 +1,104 @@
+# The root of the reconciliation graph: the repository, and the one
+# Kustomization that applies the four layer Kustomizations beside it.
+#
+# `flux bootstrap` would generate this file and write it into your repository
+# on your behalf. This kit commits it instead, so a fork edits two fields —
+# `url` and `ref.branch` — and applies it. Nothing is written back into the
+# fork's repository, and no personal access token exists anywhere in the flow.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: flux-system
+  namespace: flux-system
+spec:
+  # How often source-controller checks for new commits. This is the latency
+  # between merging and the cluster starting to change, so it is a
+  # responsiveness knob, not a safety one.
+  interval: 1m0s
+
+  # How long a single clone may take before it is abandoned. Without it, a
+  # hung clone occupies the reconciler indefinitely.
+  timeout: 60s
+
+  ref:
+    # <<< EDIT ME >>> the branch this cluster tracks.
+    branch: main
+
+  # <<< EDIT ME >>> your fork.
+  #
+  # PUBLIC FORK: use the https:// URL and delete the secretRef below. A public
+  # repository needs no credential at all, which is what keeps the
+  # exactly-one-hand-applied-secret property literally true.
+  #
+  #   url: https://github.com/YOUR-ORG/YOUR-FORK.git
+  #
+  # PRIVATE FORK: keep the secretRef and register a READ-ONLY deploy key on the
+  # fork. That key is then the one exception to the one-secret property: a
+  # second hand-created secret, which cannot itself be encrypted because Flux
+  # needs it before it can read the repository that holds everything else. It
+  # is read-only and scoped to a single repository, which is the smallest
+  # exception available. Say so out loud rather than letting a reader discover
+  # it.
+  #
+  #   kubectl create secret generic flux-system \
+  #     --namespace flux-system \
+  #     --from-file=identity=./deploy-key \
+  #     --from-file=identity.pub=./deploy-key.pub \
+  #     --from-file=known_hosts=./known_hosts
+  url: ssh://git@github.com/YOUR-ORG/YOUR-FORK.git
+  secretRef:
+    name: flux-system
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: flux-system
+  namespace: flux-system
+spec:
+  # MANDATORY, and the single most fragile line in this repository.
+  #
+  # --default-service-account=default is set on kustomize-controller (see
+  # lockdown-patches.yaml). Any Kustomization that does not name a service
+  # account is therefore applied by the powerless `default` account of its own
+  # namespace. If this field is removed, the root stops reconciling, nothing
+  # downstream is ever applied, and the failure reads as a permissions problem
+  # somewhere else entirely.
+  #
+  # kustomize-controller's own account is bound to cluster-admin by the
+  # ClusterRoleBinding named cluster-reconciler. Naming it here is a deliberate
+  # statement that this Kustomization is platform-admin-owned. Tenant
+  # Kustomizations must name a tenant account instead — see tenants.yaml.
+  serviceAccountName: kustomize-controller
+
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+
+  # This directory holds the four layer Kustomizations and the flux-system
+  # sub-directory. kustomize-controller adds any sub-directory containing its
+  # own kustomization.yaml as a resource, so Flux reconciles its own components
+  # and its own lockdown patches from git. An upgrade is then a merge, and
+  # drift on the controllers is corrected like any other drift.
+  path: ./clusters/production
+
+  interval: 10m0s
+  retryInterval: 2m0s
+
+  # PRUNING IS ON. See infrastructure.yaml for the reasoning and the one
+  # situation in which it is dangerous.
+  prune: true
+
+  # Wait for everything applied here — including the four layer Kustomizations,
+  # which report Ready only once their own contents are healthy.
+  #
+  # THE TIMEOUT IS AN ARITHMETIC CONSTRAINT, NOT A ROUND NUMBER. Because the
+  # layers are chained with dependsOn, their timeouts are sequential and this
+  # value must exceed their sum, or a healthy-but-slow first install reports a
+  # root failure:
+  #
+  #     infrastructure 10m + platform 5m + observability 15m + tenants 10m = 40m
+  #
+  # Change any layer timeout and change this one with it.
+  wait: true
+  timeout: 45m0s

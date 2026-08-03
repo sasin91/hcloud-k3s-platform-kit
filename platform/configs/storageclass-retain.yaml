@@ -1,0 +1,42 @@
+---
+# A storage class that does not delete the disk.
+#
+# The provider's default class reclaims with `Delete`: when the
+# PersistentVolumeClaim goes, the volume goes with it, and the data is gone.
+# That is a correct default for scratch space and a catastrophic one for a
+# database, because the ways a claim disappears are ordinary ways — a namespace
+# deleted, a chart uninstalled, a path renamed in a repository that a pruning
+# reconciler then acts on. None of those look like "destroy the data" at the
+# moment they are done.
+#
+# It matters more here than on most platforms: this provider's block volumes
+# support no snapshots at all. There is no undo, no point-in-time copy, and no
+# CSI snapshot class to fall back on. The backup is a file copy taken by the
+# tenant's backup job, and it is the only copy.
+#
+# STATEFUL WORKLOADS BELONG ON THIS CLASS. It is not the cluster default, on
+# purpose: the default should be the one whose failure mode is a lost cache,
+# not the one that quietly accumulates paid-for volumes nobody is tracking.
+#
+# WHAT IT COSTS. `Retain` is not free — a released volume is not automatically
+# reusable. After the claim is deleted the PersistentVolume stays in `Released`
+# and no new claim can bind to it until someone clears `spec.claimRef` by hand,
+# and the volume goes on being billed until someone deletes it. That manual
+# step is the price of the data still existing, and it should be on somebody's
+# checklist rather than a surprise.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: hcloud-volumes-retain
+  annotations:
+    # Explicitly not the default. Stated rather than omitted, because two
+    # classes both claiming the default is a cluster where which one you get
+    # depends on ordering.
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: csi.hetzner.cloud
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+# Bind when a pod is scheduled, not when the claim is created. A block volume
+# exists in one location; binding it before the pod is scheduled can place the
+# volume where the pod cannot be.
+volumeBindingMode: WaitForFirstConsumer

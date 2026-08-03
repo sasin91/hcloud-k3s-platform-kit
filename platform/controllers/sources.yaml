@@ -1,0 +1,91 @@
+---
+# Where every platform component comes from.
+#
+# Every reference below carries an exact version. Not a range, not a channel,
+# not a floating tag. A range such as `1.21.x` is an unpinned reference wearing
+# a version's clothes: the next reconciliation can cross a boundary nobody
+# reviewed. There is a continuous-integration check that fails the pull request
+# on an unpinned chart or module reference — this file is the main thing it
+# reads.
+#
+# Provenance for each version is recorded at the reference that uses it, in
+# platform/controllers/releases/, so the claim and the check live together.
+
+# ---------------------------------------------------------------------------
+# Gateway API custom resource definitions, standard channel.
+# ---------------------------------------------------------------------------
+# WHY a GitRepository rather than a committed copy: the standard channel is
+# ~1.2 MB of generated YAML. Upstream publishes it both as a release asset and
+# as the same files in the repository at the tag, so a tag pin is exact without
+# vendoring a megabyte of machine-written schema into a kit meant to be read.
+#
+# WHY not a remote base in a kustomization.yaml: kustomize-controller runs with
+# `--no-remote-bases=true` (see the delivery decision). A remote base is an
+# arbitrary URL fetched at apply time by a cluster-admin-capable controller.
+# A Flux source is the same fetch, declared, pinned and visible in `flux get`.
+#
+# The standard channel is what the platform installs. The experimental channel
+# is not installed: nothing here needs it, and installing definitions nobody
+# consumes gives tenants API surface the platform has made no decisions about.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: gateway-api
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://github.com/kubernetes-sigs/gateway-api
+  ref:
+    # v1.6.1 — latest non-prerelease tag, read from the GitHub releases API on
+    # 2026-08-03. Standard channel confirmed from the CRDs' own
+    # `gateway.networking.k8s.io/channel: standard` annotation at this tag,
+    # not from documentation.
+    tag: v1.6.1
+  # Fetch only the definitions. The rest of the repository is documentation,
+  # conformance tests and Go source, and none of it is applied.
+  sparseCheckout:
+    - config/crd/standard
+
+# ---------------------------------------------------------------------------
+# Helm chart repositories.
+# ---------------------------------------------------------------------------
+---
+# cert-manager. OCI registry rather than an HTTP index: there is no index to
+# poll, the tag resolves to a digest, and the artifact is content-addressed.
+#
+# NOTE the version string differs by transport. The OCI tag is `1.21.1`; the
+# same chart in the HTTP index at charts.jetstack.io is version `v1.21.1`.
+# Copying a version from the documentation into the wrong one of these fails
+# at resolve time, which is the good case — it is worth knowing why.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://quay.io/jetstack/charts
+  interval: 24h
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: traefik
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://ghcr.io/traefik/helm
+  interval: 24h
+---
+# metrics-server publishes no OCI chart, so this one is an HTTP index and does
+# get polled on the interval. Stated rather than hidden: the difference is
+# upstream's, not a preference.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: metrics-server
+  namespace: flux-system
+spec:
+  type: default
+  url: https://kubernetes-sigs.github.io/metrics-server/
+  interval: 24h

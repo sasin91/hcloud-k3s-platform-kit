@@ -1,0 +1,60 @@
+# Layer 2 of 4 — platform: the configuration that only becomes expressible
+# once the infrastructure layer's custom resource definitions exist.
+#
+# Certificate issuers, the shared Gateway and its listeners, admission policy,
+# cluster-wide network policy defaults. Every one of these is a custom resource
+# whose kind is registered by layer 1.
+#
+# The directory is ./platform/configs, and the pairing is deliberate:
+# ./platform/controllers installs the definitions, ./platform/configs uses
+# them. Two directories rather than one because the edge between them has to be
+# declarable, and a Kustomization is the only thing that can declare it — a
+# HelmRelease's dependsOn refers to other HelmReleases only.
+#
+# Chain: flux-system -> infrastructure -> PLATFORM -> observability -> tenants
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform
+  namespace: flux-system
+spec:
+  # The edge that exists because ordering is correctness. A ClusterIssuer
+  # applied before its controller's definition is established fails, retries,
+  # and succeeds a minute later — indistinguishable from flakiness, and it
+  # trains people to re-run things instead of fixing the graph.
+  #
+  # infrastructure declares wait: true, so this edge means "the controllers are
+  # running", not "their manifests were accepted".
+  dependsOn:
+    - name: infrastructure
+
+  # Platform-admin-owned. Required by --default-service-account=default.
+  serviceAccountName: kustomize-controller
+
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+
+  path: ./platform/configs
+
+  interval: 30m0s
+  retryInterval: 2m0s
+
+  # Safe because a cluster built from this kit is born clean. See
+  # infrastructure.yaml for the full reasoning and the one case where it is
+  # not.
+  prune: true
+
+  # 5m: this layer applies configuration objects rather than workloads, so
+  # there are no image pulls in the critical path. If it ever needs longer,
+  # something workload-shaped has been put in the wrong layer.
+  wait: true
+  timeout: 5m0s
+
+  # Issuer credentials — a DNS API token for ACME DNS-01 challenges, for
+  # instance — live encrypted in this layer.
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age

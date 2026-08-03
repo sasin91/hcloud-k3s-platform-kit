@@ -1,0 +1,72 @@
+---
+# A rule can be committed, applied, and still not be loaded.
+#
+# THIS IS THE MOST IMPORTANT COMMENT IN THIS DIRECTORY. Read it before trusting
+# any alert in the layer.
+#
+# Every step between a rule in this repository and a rule being evaluated can
+# succeed while producing nothing:
+#
+#   * `kubectl get vmrule` shows the object exists. It does not show that the
+#     evaluator picked it up.
+#   * The operator selects rule objects by label and namespace. A selector that
+#     does not match yields no error anywhere — just an evaluator with fewer
+#     rules than the repository has.
+#   * The Prometheus converter, when enabled, rewrites a VMRule from a
+#     same-named PrometheusRule. The apply succeeds; the content is replaced.
+#     (This is why the converter is disabled in
+#     ../controllers/victoria-metrics-k8s-stack.yaml.)
+#   * Most of this cluster's alert rules are not in this repository at all.
+#     They are downloaded at apply time by the chart's sync Job. If that Job
+#     fails, or a source 404s after an upstream reorganises, the reconcile is
+#     still green and the rules are still gone.
+#
+# So:
+#
+#   > VERIFY ALERT RULES AGAINST THE RUNNING EVALUATOR, NEVER AGAINST THE
+#   > REPOSITORY.
+#
+#     kubectl -n observability port-forward svc/vmalert-victoria-metrics-k8s-stack 8080:8080
+#     curl -s localhost:8080/api/v1/rules | jq '[.data.groups[].name] | sort'
+#
+# Compare that list against what you expect. Prose gets skipped; a list of
+# group names does not.
+#
+# The canary below is the automated half of the same idea. It is honest about
+# its limits: it proves THIS group is loaded and says nothing whatsoever about
+# any other group. It is a canary, not a checksum. It also cannot fire if the
+# evaluator is down — the imported vm-health rules cover that case, and the two
+# together are what make "no alerts" mean something.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: rules-loaded-canary
+  namespace: observability
+spec:
+  groups:
+    - name: observability-meta
+      interval: 1m
+      rules:
+        # A recording rule that always produces a value. vmalert writes rule
+        # results back to the metrics store, so the presence of this series is
+        # evidence that this group was loaded and evaluated — the one thing
+        # reading the repository cannot tell you.
+        - record: platform:rules_loaded
+          expr: vector(1)
+
+        - alert: PlatformAlertRulesNotLoaded
+          expr: absent(platform:rules_loaded)
+          # Long enough to cover a fresh install: the series does not exist
+          # until the group has evaluated once and the result has been written
+          # back, so a shorter window fires on every new cluster.
+          for: 20m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The platform's own alert rules are not being evaluated"
+            description: >-
+              The canary recording rule has produced nothing. The rule objects
+              may not be selected by the evaluator, the sync Job may have
+              failed, or the evaluator may not be writing results back. Until
+              this clears, the silence from every other alert in this layer
+              means nothing at all.

@@ -1,0 +1,74 @@
+# SOPS creation rules.
+#
+# This file decides which key a newly encrypted file is encrypted to. It is
+# consulted only when a file is CREATED or re-encrypted — an already-encrypted
+# file carries its own recipients, so changing this file does not rotate
+# anything. Rotation is `sops updatekeys`, run over every matching file.
+#
+# Tooling pinned at the time of writing:
+#     sops  v3.13.3   (getsops/sops)
+#     age   v1.3.1    (FiloSottile/age)
+#
+# The in-cluster decryptor is kustomize-controller, which has SOPS built in;
+# nothing installs sops into the cluster. The key it decrypts with is the
+# secret named sops-age in the flux-system namespace, and that secret is the
+# one thing in this entire system created by hand. See clusters/README.md.
+
+creation_rules:
+  # ---------------------------------------------------------------------------
+  # Everything Flux reconciles. The path pattern matches the four layer
+  # directories and the cluster directory, by the naming convention that an
+  # encrypted file ends in .sops.yaml.
+  #
+  # The convention is load-bearing in both directions: it is how a reader knows
+  # a file is encrypted without opening it, and how a reviewer notices a secret
+  # that is not.
+  # ---------------------------------------------------------------------------
+  - path_regex: (^|/)(clusters|infrastructure|platform|observability|tenants)/.*\.sops\.ya?ml$
+    # Encrypt the values, leave the structure readable. Without this, the whole
+    # document is ciphertext and a review cannot tell a renamed key from a
+    # rotated password. With it, a diff shows which secret changed and in which
+    # namespace, and shows nothing of what it changed to.
+    encrypted_regex: ^(data|stringData)$
+    age: >-
+      age1PLACEHOLDERREPLACEWITHYOUROWNAGEPUBLICKEYFROMAGEKEYGENXXXX
+
+  # ---------------------------------------------------------------------------
+  # Catch-all, deliberately last: any other file following the convention is
+  # encrypted to the same key rather than silently having no rule. A file with
+  # no matching rule is refused by sops, which is loud enough — but "loud" here
+  # would mean discovering at encryption time that a directory was overlooked.
+  # ---------------------------------------------------------------------------
+  - path_regex: \.sops\.ya?ml$
+    encrypted_regex: ^(data|stringData)$
+    age: >-
+      age1PLACEHOLDERREPLACEWITHYOUROWNAGEPUBLICKEYFROMAGEKEYGENXXXX
+
+# =============================================================================
+# THE KEY ABOVE IS A PLACEHOLDER. IT IS NOT A VALID age RECIPIENT.
+#
+# It contains uppercase characters, which bech32 does not permit, so sops
+# refuses it rather than encrypting to a key nobody holds. That failure mode is
+# the point: a syntactically valid but unknown public key would encrypt
+# successfully and produce files that no cluster on earth can decrypt, and the
+# error would arrive at reconcile time, in a controller log, days later.
+#
+# Replace both occurrences with your own public key:
+#
+#     age-keygen -o age.agekey
+#     # Public key: age1... <- this line, both times
+#
+# The private half never enters this repository. It goes into a password
+# manager, and into the cluster once:
+#
+#     kubectl create secret generic sops-age \
+#       --namespace flux-system \
+#       --from-file=age.agekey=age.agekey
+#
+# MORE THAN ONE OPERATOR: add recipients, do not share a private key. The age
+# field takes a comma-separated list, and every recipient can decrypt
+# independently. Removing a recipient requires `sops updatekeys` over every
+# encrypted file, and the removed key can still decrypt every commit already in
+# history — so treat removal as key rotation on the underlying secrets, not as
+# an edit to this file.
+# =============================================================================

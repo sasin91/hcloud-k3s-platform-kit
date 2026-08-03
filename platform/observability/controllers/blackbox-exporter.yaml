@@ -1,0 +1,125 @@
+---
+# Probes: blackbox-exporter.
+#
+# Everything else in this layer measures the platform from the inside — a pod
+# reporting that it is healthy, a scrape succeeding, a queue draining. A probe
+# measures it from the outside, by connecting to it the way a user would. The
+# difference is the entire value: a workload can be Ready, its Service can have
+# endpoints, its certificate can be issued, and the thing can still be
+# unreachable because a route was never attached or the certificate that got
+# issued is not the one being served.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: blackbox-exporter
+  namespace: observability
+spec:
+  interval: 1h
+  timeout: 10m
+  chart:
+    spec:
+      chart: prometheus-blackbox-exporter
+      version: "11.16.0"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: observability
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # Without this the resource is called
+    # blackbox-exporter-prometheus-blackbox-exporter, and every probe in
+    # ../configs/probes.yaml has to repeat it. A name consumed in many places
+    # is worth shortening once.
+    fullnameOverride: blackbox-exporter
+
+    # Two replicas and a budget, because a prober that restarts during a node
+    # drain reports that everything it was probing went down. A monitoring
+    # component's own unavailability is indistinguishable from an outage unless
+    # you make it not happen.
+    replicas: 2
+    podDisruptionBudget:
+      maxUnavailable: 1
+
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+
+    config:
+      modules:
+        # Plain HTTP. Used for in-cluster endpoints, which have no certificate
+        # and do not need one.
+        http_2xx:
+          prober: http
+          timeout: 5s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            valid_status_codes: []          # any 2xx
+            follow_redirects: true
+            preferred_ip_protocol: ip4
+
+        # Public HTTPS. This is the module that earns its keep: it fails when
+        # the certificate being SERVED is wrong, expired or self-signed, which
+        # is a different fact from the certificate resource being Ready. The
+        # certificate controller reports what it issued; this reports what
+        # arrives at a client.
+        https_2xx:
+          prober: http
+          timeout: 10s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            valid_status_codes: []
+            follow_redirects: true
+            fail_if_not_ssl: true
+            preferred_ip_protocol: ip4
+            tls_config:
+              insecure_skip_verify: false
+
+        # Redirect check: an apex or www name that should 301 rather than
+        # serve. A name silently landing on a default backend is a failure that
+        # returns 200 and therefore passes every other check.
+        http_3xx:
+          prober: http
+          timeout: 5s
+          http:
+            valid_status_codes: [301, 302, 307, 308]
+            follow_redirects: false
+            preferred_ip_protocol: ip4
+
+        # Raw TCP. For workloads that bypass the HTTP proxy entirely — a
+        # protocol with long-lived sessions and no hostname multiplexing has no
+        # HTTP endpoint to probe, and is exactly the kind of thing that goes
+        # unmonitored because the usual check does not fit it.
+        tcp_connect:
+          prober: tcp
+          timeout: 5s
+          tcp:
+            preferred_ip_protocol: ip4
+
+        # There is deliberately no ICMP module. ICMP probing requires CAP_NET_RAW,
+        # which means adding back a capability this pod otherwise drops, in
+        # order to learn something a TCP connect already tells you better.
+
+    # The chart ships a ServiceMonitor and a PrometheusRule. Both are off: the
+    # operator's Prometheus converter is disabled cluster-wide, so these object
+    # kinds are inert here. The native equivalents — a VMServiceScrape for the
+    # exporter's own metrics and VMProbe objects for the targets — live in
+    # ../configs/.
+    serviceMonitor:
+      enabled: false
+    prometheusRule:
+      enabled: false
+
+    # NOT EXPOSED. The exporter's /probe endpoint takes a target URL as a query
+    # parameter and fetches it. Reachable from outside, that is an open request
+    # forwarder into the cluster network.
+    ingress:
+      enabled: false

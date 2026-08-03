@@ -1,0 +1,81 @@
+# Multi-tenancy lockdown — flags for kustomize-controller.
+#
+# This is a JSON 6902 patch. It is applied by kustomization.yaml in this
+# directory, which also applies the two narrower patches that give the other
+# controllers the subset of these flags they accept.
+#
+# ---------------------------------------------------------------------------
+# WHY ALL THREE, AND WHY THE THIRD IS THE ONE THAT MATTERS
+# ---------------------------------------------------------------------------
+#
+# --no-cross-namespace-refs=true
+#     A tenant's Flux resources may only reference sources in the tenant's own
+#     namespace. Without it, a tenant can point a Kustomization at another
+#     tenant's GitRepository, or subscribe to another tenant's events.
+#
+# --no-remote-bases=true
+#     Kustomize bases must be local files. Without it, a base is an arbitrary
+#     remote URL, so the cluster's state is determined by something outside the
+#     repository that is supposed to be its source of truth. Accepted by
+#     kustomize-controller only.
+#
+# --default-service-account=default
+#     THIS IS THE ONE THAT IS NOT OPTIONAL, and it is the least obvious.
+#
+#     A Kustomization with no spec.serviceAccountName is applied by
+#     kustomize-controller's own identity. Upstream binds that service account
+#     to cluster-admin — see the ClusterRoleBinding named cluster-reconciler in
+#     gotk-components.yaml, which binds kustomize-controller and
+#     helm-controller to the cluster-admin ClusterRole.
+#
+#     So without this flag, anyone able to create a Kustomization in ANY
+#     namespace is acting as cluster administrator, regardless of what their
+#     own permissions are. A namespace does not contain a controller acting on
+#     that namespace's behalf: the privilege boundary is the identity applying
+#     the manifests, not the namespace they land in.
+#
+#     With the flag, an unspecified reconciliation gets the powerless `default`
+#     account of its own namespace and fails with a forbidden error, which is
+#     the correct outcome. Tenants must name a service account they were
+#     granted. That is what turns "a namespace per tenant" from a naming
+#     convention into an actual boundary.
+#
+#     Consequence, and it bites immediately: every platform-owned Kustomization
+#     must now name a service account too. The root Kustomization does so in
+#     gotk-sync.yaml; the four layer Kustomizations do so in
+#     clusters/production/*.yaml. Miss one and it stops reconciling.
+#
+# Upstream reference: https://fluxcd.io/flux/installation/configuration/multitenancy/
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE COVERS ONE TARGET AND NOT ALL FIVE CONTROLLERS
+# ---------------------------------------------------------------------------
+#
+# The flags are not uniformly accepted. helm-controller and
+# notification-controller reject --no-remote-bases as an unknown flag and
+# crash-loop, so a single patch applied to every controller is not available.
+#
+# Nor can one file carry several patches: kustomize reads only the FIRST
+# document of a multi-document JSON 6902 patch file and DISCARDS THE REST
+# WITHOUT AN ERROR. Verified locally on 2026-08-03 with kustomize as embedded
+# in kubectl — a two-document file applied one flag and exited zero. Splitting
+# the remaining patches into kustomization.yaml is therefore not stylistic.
+#
+# The related trap, verified the same way: a patch whose target matches no
+# resource is silently ignored. A typo in a controller name here removes a
+# privilege boundary and reports nothing. This is why the guardrail must assert
+# the flags on the BUILT output — `kubectl kustomize clusters/production/flux-system`
+# — and not on the text of these files.
+# ---------------------------------------------------------------------------
+
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --no-cross-namespace-refs=true
+
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --no-remote-bases=true
+
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --default-service-account=default

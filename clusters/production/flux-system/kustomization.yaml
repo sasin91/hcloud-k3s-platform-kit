@@ -1,0 +1,79 @@
+# Flux, as this kit installs it.
+#
+#     kubectl apply -k clusters/production/flux-system
+#
+# This is the only kustomization a fork applies by hand. Everything afterwards
+# is reconciled from git, including this directory itself: the root
+# Kustomization in gotk-sync.yaml reconciles ./clusters/production, and
+# kustomize-controller adds any sub-directory holding its own kustomization.yaml
+# as a resource. So Flux upgrades itself from the committed manifest, and these
+# patches are re-applied on every reconcile rather than only at install time.
+#
+# Pinned Flux version: v2.9.3. It is declared in
+# scripts/generate-flux-components.sh and rendered into gotk-components.yaml;
+# the controller image tags in that file are the authority.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - gotk-components.yaml
+  - gotk-sync.yaml
+
+# ---------------------------------------------------------------------------
+# Multi-tenancy lockdown.
+#
+# The reasoning for all three flags — in particular why the third is not
+# optional — is in lockdown-patches.yaml. Read that file before changing
+# anything here.
+#
+# The targets are written as alternations that include controllers this kit
+# does not install (image-reflector, image-automation). That is deliberate: a
+# fork adding a controller inherits the lockdown instead of silently running an
+# unlocked one. A target matching nothing is ignored without error, which makes
+# the extra names free — and is also why the guardrail must check the built
+# output rather than this file.
+# ---------------------------------------------------------------------------
+patches:
+  # All three flags. kustomize-controller is the only controller that accepts
+  # all three, and the only one whose default identity is cluster-admin on the
+  # apply path.
+  - path: lockdown-patches.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: kustomize-controller
+
+  # Cross-namespace references, for every other controller that understands the
+  # flag. Without it on notification-controller, a tenant can subscribe to
+  # another tenant's events.
+  - patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --no-cross-namespace-refs=true
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: "(helm-controller|notification-controller|image-reflector-controller|image-automation-controller)"
+
+  # helm-controller applies manifests too, and is bound to cluster-admin by the
+  # same ClusterRoleBinding as kustomize-controller. A HelmRelease with no
+  # service account is the same hole as a Kustomization with no service
+  # account. It does not accept --no-remote-bases.
+  - patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --default-service-account=default
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: helm-controller
+
+# Upstream's lockdown recipe carries a fourth patch, setting
+# spec.serviceAccountName on the root Kustomization. This kit writes that field
+# directly into gotk-sync.yaml instead, because a patch that silently matches
+# nothing would leave the root reconciling as the powerless `default` account
+# and stop the entire cluster. A field that must be present is better stated
+# than derived.

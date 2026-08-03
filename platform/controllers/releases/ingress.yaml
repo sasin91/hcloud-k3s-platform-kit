@@ -1,0 +1,197 @@
+---
+# The ingress controller. Traefik, because it is the distribution's own and the
+# one the cluster module already knows how to not install.
+#
+# READ THIS BEFORE CHANGING replicas OR THE DISRUPTION BUDGET.
+#
+# The single-replica ingress is the most widely copied configuration in this
+# whole stack, and its cause is a certificate store: an ingress controller with
+# a built-in ACME client writes certificate state to a local file, so replicas
+# race and reissue against each other. Every guide therefore pins the ingress
+# to one replica — and then, because one replica cannot satisfy a disruption
+# budget, disables the budget too.
+#
+# cert-manager removes the cause (see cert-manager.yaml). This file removes the
+# effects. That is the whole point: when you remove a cause, go and hunt its
+# effects, because the comment explaining a constraint is exactly what makes it
+# look deliberate long after it stopped being true.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: traefik
+  namespace: flux-system
+spec:
+  interval: 12h
+  releaseName: traefik
+  targetNamespace: traefik
+  storageNamespace: traefik
+  chart:
+    spec:
+      chart: traefik
+      # 41.1.1 (application v3.7.9) — latest chart tag, read from the GitHub
+      # releases of traefik/traefik-helm-chart and confirmed present in
+      # oci://ghcr.io/traefik/helm/traefik on 2026-08-03.
+      version: 41.1.1
+      sourceRef:
+        kind: HelmRepository
+        name: traefik
+        namespace: flux-system
+      interval: 24h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  driftDetection:
+    mode: enabled
+  values:
+    deployment:
+      # More than one. Raise this and the anti-affinity constraint together:
+      # the anti-affinity below is `required`, so a replica count higher than
+      # the number of schedulable nodes leaves a pod Pending forever — and a
+      # Pending pod plus a disruption budget blocks every subsequent drain.
+      replicas: 2
+
+    # A cluster that applies unattended operating-system updates drains nodes to
+    # reboot them. A drain evicts pods; it honours a disruption budget and has
+    # no obligation to anything without one. This is the object that turns "two
+    # replicas" into "two replicas are still running an hour from now".
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+
+    # Spread across nodes, required rather than preferred. `preferred` is a
+    # wish: the scheduler is free to place both replicas on one node, and then
+    # a single node reboot takes the whole ingress with it — silently, because
+    # the deployment still reports two ready replicas right up until the drain.
+    # The chart renders this value as a template, hence the braces.
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: '{{ template "traefik.name" . }}'
+                app.kubernetes.io/instance: '{{ .Release.Name }}-{{ include "traefik.namespace" . }}'
+            topologyKey: kubernetes.io/hostname
+
+    # NO CERTIFICATE RESOLVER. Empty on purpose, and checked in CI: an ACME
+    # resolver configured here alongside cert-manager means somebody
+    # reintroduced the race that the whole arrangement exists to remove.
+    certificatesResolvers: {}
+
+    providers:
+      # HTTP routing is Gateway API and nothing else.
+      #
+      # This is not tidiness. Tenant hostnames are authorised by an admission
+      # policy that targets HTTPRoute (see
+      # platform/configs/httproute-hostname-policy.yaml). Any other enabled
+      # route source — Ingress, or this controller's own IngressRoute — is a
+      # second, unpoliced way to claim the same hostname, and an inner control
+      # that only covers one of two doors is one layer wearing a costume.
+      kubernetesCRD:
+        enabled: false
+      kubernetesIngress:
+        enabled: false
+      kubernetesGateway:
+        enabled: true
+        # Standard channel only. The experimental channel would enable TCPRoute
+        # and TLSRoute through this proxy; long-lived connection protocols are
+        # deliberately kept off the ingress, because a reverse proxy is a shared
+        # restart domain and every ingress rollout would drop every session.
+        experimentalChannel: false
+        statusAddress:
+          service:
+            # Copy the load balancer's address onto the Gateway's status, so
+            # `kubectl get gateway` answers "where does this actually live".
+            enabled: true
+
+    # The GatewayClass is created by the chart — it names this controller, so
+    # it belongs with this controller.
+    gatewayClass:
+      enabled: true
+      name: traefik
+
+    # The Gateway is NOT created by the chart. It is a platform-owned object
+    # that references a certificate Secret and decides which namespaces may
+    # attach routes, and it lives in platform/configs/gateway.yaml where the
+    # definitions it needs are already established. A Gateway rendered by the
+    # chart would also be recreated with chart defaults on every upgrade.
+    gateway:
+      enabled: false
+
+    # No IngressClass: nothing here serves Ingress objects, and a default
+    # IngressClass that serves nothing is a trap for the first person who
+    # writes an Ingress and waits for it to work.
+    ingressClass:
+      enabled: false
+      isDefaultClass: false
+
+    # No dashboard. It is a query interface onto the routing table, and the
+    # safest configuration for an interface like that is the one that does not
+    # exist.
+    api:
+      dashboard: false
+    ingressRoute:
+      dashboard:
+        enabled: false
+
+    service:
+      spec:
+        type: LoadBalancer
+      annotations:
+        # The only provider-coupled lines in platform/. They have to be here:
+        # this Service is what causes a load balancer to exist.
+        #
+        # CHANGE BOTH. The location must be one the cluster's nodes are in, and
+        # the type must be one currently available there — "supported" and
+        # "available" are different things in this provider's API, and a
+        # location or type that is merely supported applies cleanly and then
+        # fails when the balancer is created.
+        load-balancer.hetzner.cloud/location: "CHANGE-ME-location"
+        load-balancer.hetzner.cloud/type: "CHANGE-ME-lb-type"
+        # Reach the nodes over the private network rather than their public
+        # addresses. Keeps the hop off the internet and out of the firewall.
+        load-balancer.hetzner.cloud/use-private-ip: "true"
+        #
+        # CLIENT IP ADDRESSES ARE NOT PRESERVED BY DEFAULT, and no
+        # externalTrafficPolicy setting changes that here: this provider's load
+        # balancer terminates the connection and opens a new one, so every
+        # request arrives from the balancer. Recovering the real address needs
+        # PROXY protocol, which is two changes that must be made together —
+        # uncomment both or neither. Enabling the annotation alone breaks every
+        # request; enabling the entrypoint alone, or trusting a range wider than
+        # the balancer, lets a client forge its own address.
+        #
+        # load-balancer.hetzner.cloud/uses-proxyprotocol: "true"
+
+    # ports:
+    #   web:
+    #     proxyProtocol:
+    #       trustedIPs:
+    #         - "10.0.0.0/8"   # the cluster's private network range, and nothing wider
+    #   websecure:
+    #     proxyProtocol:
+    #       trustedIPs:
+    #         - "10.0.0.0/8"
+
+    # NO ENTRYPOINT-LEVEL HTTP-TO-HTTPS REDIRECT, deliberately.
+    #
+    # An entrypoint redirect rewrites every request on port 80, including
+    # `/.well-known/acme-challenge/...`. The HTTP-01 solver's request would be
+    # redirected to a port whose certificate does not exist yet, so issuance
+    # fails and keeps failing in a way that looks like a certificate problem.
+    # The redirect is done as a route on the Gateway's HTTP listener instead,
+    # where an exact-path match for the challenge takes precedence over it.
+    # See platform/configs/gateway.yaml.
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        # A memory limit, because the chart derives GOMEMLIMIT from it and an
+        # unbounded proxy is the thing that takes a node down with it. No CPU
+        # limit: throttling a latency-sensitive proxy converts a busy moment
+        # into a queue, and every request behind it pays.
+        memory: 256Mi

@@ -1,0 +1,114 @@
+# The tenant's own reconciliation — the only one that runs as the tenant.
+#
+# Two Flux Kustomizations exist per tenant and they are not interchangeable:
+#
+#   the guarantees   applied by the PLATFORM's reconciliation, from the
+#                    cluster's tenants stage. That is everything else in this
+#                    directory: the quota, the limit range, the network
+#                    policies, the disruption budget, the backup, this file.
+#                    A tenant that could reconcile its own quota does not have
+#                    one.
+#
+#   the workloads    applied by the reconciliation below, impersonating the
+#                    tenant's service account, restricted to ./workloads.
+#                    Everything the tenant deploys goes there.
+#
+# The two have separate inventories, so pruning in one never reaches into the
+# other.
+#
+# ---------------------------------------------------------------------------
+# WHY THERE IS A SECOND GitRepository HERE
+#
+# It looks redundant — same repository, same read-only deploy key, second
+# object. It is required, and by a decision made deliberately elsewhere:
+# --no-cross-namespace-refs=true means a Kustomization in this namespace cannot
+# reference a source in flux-system.
+#
+# That flag is what stops any tenant pointing its reconciliation at any other
+# tenant's source. Duplicating the source object per namespace is the cost of
+# it, and it is worth paying: the alternative is a shared source that every
+# tenant can name.
+#
+# WHERE THIS BOUNDARY ENDS, STATED PLAINLY
+#
+# The in-cluster boundary holds against anything applied THROUGH this
+# reconciliation. It does not hold against someone editing this file, because
+# this file decides which identity is used. Write access to `tenants/<name>/`
+# in the repository is therefore the outer boundary, and the mechanism that
+# enforces it is code ownership on the path, not Kubernetes.
+#
+# Anyone reasoning about tenant isolation here needs both halves. The cluster
+# cannot tell you who is allowed to commit.
+# ---------------------------------------------------------------------------
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: tenant-REPLACE-tenant
+  namespace: tenant-REPLACE-tenant
+spec:
+  interval: 5m
+  url: REPLACE-repository-url
+  ref:
+    # A branch tracks whatever lands on it. A tag, or semver range, means the
+    # cluster moves when someone decides it should — which is the difference
+    # between delivery and drift for a tenant that cares.
+    branch: main
+  secretRef:
+    # Read-only deploy key, SOPS-encrypted, one per tenant namespace because
+    # cross-namespace references are disabled. See
+    # deploy-key-secret.example.yaml.
+    #
+    # Remove this block entirely if the repository is public — a credential
+    # that grants nothing not already public is a credential to rotate for no
+    # benefit.
+    name: flux-deploy-key
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tenant-REPLACE-tenant
+  namespace: tenant-REPLACE-tenant
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+
+  path: ./tenants/REPLACE-tenant/workloads
+  sourceRef:
+    kind: GitRepository
+    name: tenant-REPLACE-tenant
+    # No namespace field. Cross-namespace references are disabled; naming one
+    # here fails rather than resolving.
+
+  # THE LINE THIS WHOLE FILE EXISTS FOR.
+  #
+  # Without it the reconciliation is performed by the kustomize controller's
+  # own identity, which is bound to cluster-admin. With it, every apply is
+  # subject to the Role in rbac.yaml, and a tenant manifest asking for a
+  # ClusterRoleBinding is refused by the API server rather than granted.
+  #
+  # This is checked in CI: a tenant reconciliation without a service account
+  # fails the pull request. It is a privilege boundary, so it fails rather than
+  # reports.
+  serviceAccountName: tenant-REPLACE-tenant
+
+  # Deleted from the repository means deleted from the cluster. An apply-only
+  # pipeline leaves removed resources running indefinitely, and a resource
+  # nobody remembers is a resource nobody patches.
+  prune: true
+
+  # Wait for what was applied to become healthy, and report if it does not. A
+  # reconciliation that does not wait has proven only that the API server
+  # accepted the YAML.
+  wait: true
+
+  # decryption:
+  #   provider: sops
+  #   secretRef:
+  #     name: sops-age
+  #
+  # Uncomment if this tenant commits SOPS-encrypted secrets of its own. The
+  # key must be present in THIS namespace — cross-namespace references again —
+  # which means deciding whether the tenant gets the platform's age key or one
+  # of its own. One key per tenant is the answer that survives a tenant
+  # leaving.

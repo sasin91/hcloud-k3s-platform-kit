@@ -1,0 +1,107 @@
+---
+# Kubernetes version upgrades, applied by the system upgrade controller.
+#
+# Two plans, and the order between them is the whole design: servers first, one
+# at a time, and agents only after every server has finished. An agent running a
+# newer version than the control plane is unsupported, and the `prepare` step on
+# the agent plan is what makes that impossible rather than merely discouraged.
+#
+# PRECONDITION. The cluster module ships its own copy of this controller and its
+# own plans. Set `enable_system_upgrade_controller = false` there, or two sets of
+# plans will race over the same nodes.
+#
+# THE IMAGE LOOKS UNPINNED AND IS NOT. `rancher/k3s-upgrade` carries no tag on
+# purpose: the controller appends the version it resolved from the channel below
+# as the tag. Pinning a tag here would freeze every node at that version while
+# the plan went on reporting success, which is the worst available outcome —
+# upgrades that appear to be happening. Any check for unpinned references needs
+# to know about this one line.
+
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: k3s-server
+  namespace: system-upgrade
+  labels:
+    k3s-upgrade: server
+spec:
+  # A RELEASE CHANNEL, NOT A VERSION — and a minor channel, not `stable`.
+  #
+  # Patch releases are security fixes and should land without a human. Minor
+  # releases change API deprecations, component versions and occasionally
+  # defaults, so crossing one is a decision. `stable` follows minors on its own
+  # schedule, which turns that decision into something that happens overnight.
+  #
+  # CHANGE THIS TO THE MINOR YOUR CLUSTER IS ACTUALLY ON before the first
+  # reconcile — check `kubectl get nodes` and the module's `k3s_channel`. A plan
+  # pointing below the running version does not roll anything back; it sits
+  # there having nothing to do, and the cluster stops receiving patches without
+  # anything reporting an error. Raise it one minor at a time.
+  #
+  # The channel list this URL comes from: https://update.k3s.io/v1-release/channels
+  channel: https://update.k3s.io/v1-release/channels/v1.36
+  #
+  # To pin an exact version instead — for a change window, or to hold a cluster
+  # at a known release — replace the channel with:
+  # version: v1.36.2+k3s1
+
+  # One server at a time, always. The control plane is a quorum; upgrading two
+  # members of a three-member cluster at once is losing it.
+  concurrency: 1
+
+  serviceAccountName: system-upgrade
+
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: In
+        values: ["true"]
+
+  # Cordon, not drain, on servers. Draining a control-plane node evicts the
+  # controllers doing the upgrade along with everything else; the node is
+  # rebooted in place either way, so the eviction buys nothing and can deadlock.
+  cordon: true
+
+  upgrade:
+    image: rancher/k3s-upgrade
+---
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: k3s-agent
+  namespace: system-upgrade
+  labels:
+    k3s-upgrade: agent
+spec:
+  channel: https://update.k3s.io/v1-release/channels/v1.36
+  concurrency: 1
+  serviceAccountName: system-upgrade
+
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
+
+  # THIS IS THE ORDERING EDGE. The prepare container blocks until the named
+  # plan has completed on every node it selects, so no agent can be upgraded
+  # ahead of the control plane. Written as a dependency rather than as a
+  # schedule, because a schedule is a guess about how long something takes.
+  prepare:
+    image: rancher/k3s-upgrade
+    args: ["prepare", "k3s-server"]
+
+  # Agents carry the workloads, so they are drained rather than cordoned.
+  #
+  # A drain honours PodDisruptionBudgets — which is exactly why the ingress has
+  # one, and why every tenant gets one from the template. Without a budget, the
+  # eviction is granted immediately and the last replica of something goes with
+  # it. With one, this drain waits, and that wait is the guarantee.
+  #
+  # `force` covers pods no controller owns, which would otherwise block the
+  # drain forever. On a small cluster where eviction cannot be satisfied at all,
+  # the fix is to give the workload more replicas, not to remove its budget.
+  drain:
+    force: true
+
+  upgrade:
+    image: rancher/k3s-upgrade

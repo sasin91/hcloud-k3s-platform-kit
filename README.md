@@ -24,7 +24,7 @@ It is a dependency, not a fork. See [NOTICE](NOTICE).
 | Secrets | **SOPS + age** | Exactly one secret is applied by hand and cannot be encrypted. Everything else lives encrypted in git |
 | Networking | **Flannel** | Already enforces NetworkPolicy. Cilium documented as opt-in for FQDN egress |
 | Certificates | **cert-manager** only | The ingress runs no ACME client, so it runs more than one replica |
-| Routing | **Gateway API** for HTTP | Its platform/tenant/ReferenceGrant split *is* the tenancy model |
+| Routing | **Gateway API** for HTTP | Platform owns the Gateway, tenants own Routes, and `allowedRoutes` decides who may attach |
 | Observability | VictoriaMetrics stack, Vector → VictoriaLogs, Tempo, Grafana | Not exposed by default. Reached by port-forward |
 | Databases | MariaDB operator | CloudNativePG and Valkey ship commented out |
 | Tenancy | Namespace per tenant, generated with its guarantees | Quota, limits, NetworkPolicy, PDB, backup, pod security, service account and RBAC |

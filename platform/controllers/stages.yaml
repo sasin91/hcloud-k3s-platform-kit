@@ -1,0 +1,86 @@
+---
+# The two ordering edges inside the platform layer.
+#
+#   gateway-api-crds ─┐
+#                     ├─→ platform-releases ─→ (cluster's platform-configs)
+#   platform-crds ────┘
+#
+# `wait: true` on each stage means the next one starts after the previous one's
+# objects are *healthy*, not merely accepted. A reconciler that applies without
+# waiting has proven only that the API server parsed the YAML.
+#
+# EVERY Kustomization here names a service account, and so must every one a
+# fork adds. With `--default-service-account=default` set on kustomize-
+# controller, a Kustomization that names none is applied by a powerless
+# identity and fails; without that flag it would be applied by the controller's
+# own identity, which upstream binds to cluster administrator. The platform
+# stages deliberately use the privileged identity — they install controllers.
+# Tenant reconciliations must not, and that is checked in CI.
+
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gateway-api-crds
+  namespace: flux-system
+spec:
+  interval: 12h
+  retryInterval: 2m
+  timeout: 5m
+  prune: true
+  wait: true
+  serviceAccountName: kustomize-controller
+  sourceRef:
+    kind: GitRepository
+    name: gateway-api
+  # No kustomization.yaml exists in this upstream directory; kustomize-
+  # controller generates one covering every YAML file in the path. That is the
+  # whole standard channel and nothing else.
+  path: ./config/crd/standard
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-crds
+  namespace: flux-system
+spec:
+  interval: 12h
+  retryInterval: 2m
+  timeout: 5m
+  prune: true
+  wait: true
+  serviceAccountName: kustomize-controller
+  sourceRef:
+    kind: GitRepository
+    # The name Flux's own bootstrap gives the cluster's repository. A fork that
+    # named its source something else changes it here, once.
+    name: flux-system
+  path: ./platform/controllers/crds
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-releases
+  namespace: flux-system
+spec:
+  interval: 12h
+  retryInterval: 2m
+  # Chart installs pull images and wait for rollouts; five minutes is not
+  # enough and a timeout that fires normally teaches people to ignore it.
+  timeout: 15m
+  prune: true
+  wait: true
+  serviceAccountName: kustomize-controller
+  dependsOn:
+    # Traefik's Gateway API provider and cert-manager's Gateway integration
+    # both fail at start-up if these definitions are absent — Traefik's chart
+    # additionally renders a GatewayClass, which the API server rejects
+    # outright when the definition is missing.
+    - name: gateway-api-crds
+    # The Plan definition. The upgrade controller can install it itself, but
+    # then whether a Plan applies depends on whether a Deployment happened to
+    # have finished starting — see platform/controllers/crds/.
+    - name: platform-crds
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./platform/controllers/releases

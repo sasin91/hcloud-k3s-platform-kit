@@ -1,0 +1,120 @@
+# The identity the tenant's reconciliation runs as.
+#
+# This file is what turns "a namespace per tenant" into a privilege boundary
+# rather than a naming convention.
+#
+# Where a Flux Kustomization does not name a service account, it is applied by
+# the kustomize controller's own identity, and that controller is bound to
+# cluster-admin. Anyone able to create a Kustomization in any namespace is
+# therefore cluster administrator, whatever their own permissions are. A
+# namespace does not contain a controller acting on that namespace's behalf —
+# the boundary is the identity applying the manifests, not where they land.
+#
+# Three things have to be true together for that to be closed, and all three
+# are load-bearing:
+#
+#   1. the controllers run with --default-service-account set, so an
+#      unspecified reconciliation gets a powerless identity instead of
+#      cluster-admin  (platform/, not this file);
+#   2. this tenant's Kustomization names the service account below
+#      (sync.yaml);
+#   3. the Role below is namespace-scoped and grants nothing that can be used
+#      to widen itself (this file).
+#
+# Any one of them alone is theatre.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tenant-REPLACE-tenant
+  namespace: tenant-REPLACE-tenant
+automountServiceAccountToken: false
+---
+# A Role, not a ClusterRole with a namespaced binding.
+#
+# The difference is not cosmetic: a Role cannot name a cluster-scoped resource
+# at all, so no future edit to this file can accidentally grant one. A
+# ClusterRole bound into a namespace looks identical in effect today and is one
+# careless rule away from not being.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tenant-REPLACE-tenant
+  namespace: tenant-REPLACE-tenant
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+      - services
+      - serviceaccounts
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Pods are read-only. The tenant's reconciliation creates controllers, and
+  # controllers create pods; nothing about applying a manifest requires writing
+  # a pod directly. Read access is what Flux's health assertions need.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes", "grpcroutes", "referencegrants"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------
+  # DELIBERATELY ABSENT, each for its own reason
+  #
+  # namespaces — the managed label and the authorised-domain annotation live
+  #   on the namespace object. Write access here would let a tenant relabel
+  #   itself out of the hostname admission binding, or annotate another
+  #   tenant's domain onto itself.
+  #
+  # resourcequotas, limitranges, networkpolicies — the guarantees. A tenant
+  #   that can delete its own quota does not have one. These are applied by the
+  #   platform's reconciliation, which also corrects drift, so a deletion
+  #   through some other path heals; but it should not be reachable from the
+  #   tenant's own identity in the first place.
+  #
+  # roles, rolebindings — self-escalation. RBAC forbids granting permissions
+  #   you do not hold, which bounds the damage but does not prevent a tenant
+  #   duplicating its own permissions into an identity nothing tracks.
+  #
+  # daemonsets — a DaemonSet places a pod on every node in the cluster,
+  #   including pools a tenant has no business occupying. Rarely what a tenant
+  #   workload wants, and expensive when it is a mistake.
+  #
+  # nodes, persistentvolumes, storageclasses, customresourcedefinitions, and
+  #   every other cluster-scoped resource — unreachable from a Role by
+  #   construction. Listed here so a reader knows it is by design and not by
+  #   omission.
+  # ---------------------------------------------------------------------
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tenant-REPLACE-tenant
+  namespace: tenant-REPLACE-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tenant-REPLACE-tenant
+subjects:
+  - kind: ServiceAccount
+    name: tenant-REPLACE-tenant
+    namespace: tenant-REPLACE-tenant

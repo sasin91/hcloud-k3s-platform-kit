@@ -1,0 +1,536 @@
+---
+# Metrics: VictoriaMetrics k8s stack.
+#
+# One HelmRelease brings the operator, vmsingle (storage + query), vmagent
+# (scrape), vmalert (evaluate), vmalertmanager (route), kube-state-metrics and
+# node-exporter. Why this stack rather than the more common one is argued in
+# ../README.md; the short version is single-binary storage, a much smaller
+# resident footprint, and retention that costs disk rather than an architecture.
+#
+# NOTHING IN THIS FILE CREATES A ROUTE. Not for Grafana, not for vmsingle, not
+# for vmalert, not for alertmanager. Every `ingress`/`route` block below is
+# explicitly disabled rather than left at its default, so that a reader can see
+# the decision instead of inferring it from an absence.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: victoria-metrics-k8s-stack
+  namespace: observability
+spec:
+  interval: 1h
+  timeout: 20m
+  chart:
+    spec:
+      chart: victoria-metrics-k8s-stack
+      # Pinned exactly. Not a range. A range here is the "unpinned dependency is
+      # a latent breaking change" lesson with extra steps.
+      version: "0.87.0"
+      sourceRef:
+        kind: HelmRepository
+        name: victoriametrics
+        namespace: observability
+  install:
+    remediation:
+      retries: 3
+    crds: Create
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+    crds: CreateReplace
+    # The committed values file is the entire source of truth. Never reuse
+    # values from the installed release: values removed from this file must
+    # leave the cluster, and Helm's merge-against-installed behaviour is how a
+    # values file quietly stops describing what is running.
+    disableWait: false
+  values:
+    # ------------------------------------------------------------------
+    # Operator
+    # ------------------------------------------------------------------
+    victoria-metrics-operator:
+      enabled: true
+      crds:
+        plain: true
+      operator:
+        # The operator can watch PrometheusRule/ServiceMonitor objects and
+        # convert them into VMRule/VMServiceScrape objects of the same name.
+        # That conversion silently overwrites a hand-written VMRule whenever a
+        # same-named PrometheusRule exists — the rule is committed, applied,
+        # and then replaced by something else, with nothing reported.
+        #
+        # It is off here, and every scrape in ../configs/ is written as a
+        # native VM object instead. Charts that ship a ServiceMonitor have it
+        # disabled at the chart level for the same reason.
+        disable_prometheus_converter: true
+
+    # ------------------------------------------------------------------
+    # Storage and retention
+    # ------------------------------------------------------------------
+    # SIZING AND BACKUP ARE NOT THE SAME PROBLEM. The provider's block storage
+    # is single-writer (ReadWriteOnce, one node at a time) and has NO snapshot
+    # support at all — the CSI driver ships no VolumeSnapshotClass. So:
+    #
+    #   * These volumes are not backed up by any snapshot mechanism, and there
+    #     is no snapshot mechanism to add. Metrics history is accepted as
+    #     recoverable-by-nobody; if you need it durable, replicate it out with
+    #     vmagent's additional remote write, do not plan on restoring a disk.
+    #   * A volume cannot be shared, so "just add a replica" is not a capacity
+    #     answer. The scaling axis here is vertical.
+    #   * Growing a volume is an operation with downtime attached. Size for the
+    #     retention you chose, not for today's ingest rate.
+    #
+    # 50Gi at 30 days is a starting point for a small cluster, not a
+    # measurement. Watch `vm_data_size_bytes` for a fortnight and then decide.
+    vmsingle:
+      enabled: true
+      ingress:
+        enabled: false
+      route:
+        enabled: false
+      spec:
+        retentionPeriod: "30d"
+        replicaCount: 1
+        extraArgs:
+          # When the disk fills, go read-only instead of dying. A metrics
+          # database that stops accepting writes is a bad afternoon; one that
+          # corrupts its index is a worse week.
+          storage.minFreeDiskSpaceBytes: "5GB"
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 50Gi
+          # storageClassName is deliberately unset. This layer does not
+          # hardcode a class name owned by another layer. If you want these
+          # volumes to survive a namespace deletion, point it at the retaining
+          # class rather than the deleting default.
+        resources:
+          requests:
+            cpu: 200m
+            memory: 1Gi
+          limits:
+            memory: 3Gi
+
+    # ------------------------------------------------------------------
+    # Scrape
+    # ------------------------------------------------------------------
+    vmagent:
+      enabled: true
+      ingress:
+        enabled: false
+      route:
+        enabled: false
+      spec:
+        scrapeInterval: 30s
+        selectAllByDefault: true
+        externalLabels:
+          # Set this per cluster in a fork. It is what makes two clusters
+          # writing to one long-term store distinguishable, and it costs
+          # nothing to have before you need it.
+          cluster: default
+        extraArgs:
+          promscrape.streamParse: "true"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
+
+    # ------------------------------------------------------------------
+    # Evaluate
+    # ------------------------------------------------------------------
+    vmalert:
+      enabled: true
+      ingress:
+        enabled: false
+      route:
+        enabled: false
+      spec:
+        evaluationInterval: 30s
+        selectAllByDefault: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+
+    # ------------------------------------------------------------------
+    # Route
+    # ------------------------------------------------------------------
+    alertmanager:
+      enabled: true
+      ingress:
+        enabled: false
+      route:
+        enabled: false
+      # THIS IS THE ONE COMPONENT THE KIT SHIPS DELIBERATELY INERT.
+      #
+      # The default route below drops every alert. It has to: a receiver is a
+      # credential and a destination, and neither belongs in a public
+      # repository. But an alerting stack whose receiver is a blackhole is
+      # indistinguishable from no alerting stack, and it looks healthy while
+      # being useless — which is the exact shape of every failure in
+      # LESSONS.md.
+      #
+      # Replace this with a real receiver before you rely on any of it, using a
+      # SOPS-encrypted secret and `spec.configSecret`. See ../README.md.
+      config:
+        route:
+          receiver: blackhole
+          group_by: [alertname, namespace]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 12h
+        receivers:
+          - name: blackhole
+      spec:
+        replicaCount: 1
+        resources:
+          requests:
+            cpu: 25m
+            memory: 96Mi
+          limits:
+            memory: 256Mi
+
+    # ------------------------------------------------------------------
+    # Dashboard
+    # ------------------------------------------------------------------
+    # GRAFANA IS NOT EXPOSED. No Ingress, no HTTPRoute, no hostname, no
+    # LoadBalancer. The documented access path is `kubectl port-forward`, and
+    # exposing it is an explicit act with its own documentation.
+    #
+    # The reasoning, stated once so it is not re-litigated at every upgrade:
+    # every alternative considered — hardened built-in auth, an ingress-level
+    # credential, a proxy against an external identity provider — is a way of
+    # *defending* an internet-facing observability dashboard. None of them is
+    # as safe as not having one. What is behind this login is not charts: it is
+    # an arbitrary-query interface to every datasource, meaning every log line
+    # and every trace the platform has ever recorded, across every tenant at
+    # once.
+    #
+    # The authentication below is hardened ANYWAY, and that is the point rather
+    # than belt-and-braces theatre. A port-forward is not authentication — it
+    # narrows who can reach the port and does nothing else. And whoever adds a
+    # route later inherits whatever these defaults were; they will not
+    # rediscover this reasoning first. Two layers where the inner one is
+    # disabled is one layer wearing a costume.
+    grafana:
+      enabled: true
+      ingress:
+        enabled: false
+        hosts: []
+      route:
+        main:
+          enabled: false
+          hostnames: []
+      service:
+        type: ClusterIP
+      replicas: 1
+      # Anonymous access OFF, explicitly, at every switch that can enable it.
+      # This is stated in configuration and not in a comment because a comment
+      # asserting a security posture is not evidence of that posture — a real
+      # cluster once ran anonymous access at Editor privilege behind a comment
+      # claiming the inner role was read-only, and no check disagreed.
+      admin:
+        # No default password, and no password in this repository. The secret
+        # is created by hand, encrypted to the cluster's age key, and lives in
+        # ../secrets/. Grafana will not start until it exists — which is the
+        # intended failure: an observability stack that comes up with a known
+        # credential is worse than one that does not come up.
+        existingSecret: grafana-admin
+        userKey: admin-user
+        passwordKey: admin-password
+      # Dashboards are provisioned from configmaps, so the pod holds no state
+      # worth keeping. Persistence stays off: it would claim a single-writer
+      # volume with no snapshots to hold data that is regenerated on every
+      # reconcile. Ad-hoc dashboards created in the UI are lost on restart —
+      # that is a deliberate nudge towards committing them.
+      persistence:
+        enabled: false
+      plugins:
+        # Required for the VictoriaLogs datasource below. Fetched from the
+        # Grafana catalogue at pod start, so the pod needs egress; if your
+        # egress policy forbids that, vendor the plugin into an image instead.
+        - victoriametrics-logs-datasource
+      grafana.ini:
+        auth.anonymous:
+          enabled: false
+          org_role: Viewer
+        auth:
+          disable_login_form: false
+          # No implicit sign-in of any kind.
+          disable_signout_menu: false
+        auth.basic:
+          enabled: true
+        users:
+          allow_sign_up: false
+          allow_org_create: false
+          # A new user is a Viewer. Editor is not a read-only role: it carries
+          # dashboard write access and alert contact points that can be
+          # repointed outward.
+          auto_assign_org_role: Viewer
+        security:
+          cookie_samesite: strict
+          # cookie_secure is deliberately NOT set to true.
+          #
+          # The documented access path is a port-forward over plain HTTP to
+          # localhost, and a secure-only session cookie makes that path
+          # unusable — you would get a login form that never logs in, and the
+          # first person to hit it would "fix" it by turning something else
+          # off.
+          #
+          # If you expose this, cookie_secure: true is not optional. It is item
+          # one on the exposure checklist in ../README.md, along with the route
+          # and the forward-auth middleware in front of it.
+          cookie_secure: false
+          disable_gravatar: true
+        analytics:
+          check_for_updates: false
+          reporting_enabled: false
+        snapshots:
+          # Publishing a snapshot uploads dashboard data to a third party.
+          external_enabled: false
+      resources:
+        requests:
+          cpu: 50m
+          memory: 192Mi
+        limits:
+          memory: 512Mi
+
+    # ------------------------------------------------------------------
+    # Datasources
+    # ------------------------------------------------------------------
+    # Datasource definitions point at cluster-internal addresses. That is worth
+    # naming: it makes the dashboard a queryable window onto services that are
+    # otherwise unreachable from outside the cluster, which is a large part of
+    # why there is no route to it.
+    external:
+      vl:
+        read:
+          # VictoriaLogs runs from its own chart (./victoria-logs.yaml), so the
+          # stack is told where it is rather than deploying a second copy.
+          url: http://victoria-logs-single-server.observability.svc:9428
+    defaultDatasources:
+      extra:
+        - name: Tempo
+          uid: Tempo
+          type: tempo
+          access: proxy
+          url: http://tempo.observability.svc:3200
+          isDefault: false
+
+    # ------------------------------------------------------------------
+    # Kubernetes component scrapes — k3s reality, not upstream defaults
+    # ------------------------------------------------------------------
+    kubelet:
+      enabled: true
+    kubeApiServer:
+      enabled: true
+    coreDns:
+      enabled: true
+    kubeDns:
+      enabled: false
+    # k3s binds the controller-manager, scheduler and kube-proxy metrics
+    # endpoints to 127.0.0.1. Scraping them from a pod therefore produces
+    # targets that never come up, and the matching upstream rules use
+    # `absent()`, so they fire permanently. A permanently-firing alert is
+    # indistinguishable from no alerting: it trains people to close the tab.
+    #
+    # To turn these on, pass the corresponding `--kube-*-arg=bind-address=...`
+    # server arguments in the cluster module first, then flip these together
+    # with the rule groups disabled further down. Both halves, or neither.
+    kubeControllerManager:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeProxy:
+      enabled: false
+    # Embedded etcd exposes metrics on 2381, not the 2379 this chart's default
+    # service points at, and a single-server cluster may not be running etcd at
+    # all. Off until a fork has checked which of those is true for it.
+    kubeEtcd:
+      enabled: false
+
+    kube-state-metrics:
+      enabled: true
+      # kube-state-metrics does not export Kubernetes labels as metric labels
+      # unless they are allow-listed. Everything in
+      # ../configs/rules-tenant-guarantees.yaml depends on these two entries,
+      # and the failure mode of getting them wrong is silence, not an error.
+      #
+      # THESE MUST MATCH THE LABELS THE TENANT TEMPLATE APPLIES. A value
+      # consumed in two places has to be declared in one; this is the
+      # declaration, and the tenancy layer is the other consumer.
+      metricLabelsAllowlist:
+        - "namespaces=[platform.example.com/managed]"
+        - "cronjobs=[platform.example.com/component]"
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+
+    prometheus-node-exporter:
+      enabled: true
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+
+    # ------------------------------------------------------------------
+    # Default rules and dashboards — fetched at apply time, so PINNED
+    # ------------------------------------------------------------------
+    # Read this before changing anything below.
+    #
+    # This chart does not template its default alert rules. It runs a
+    # post-install/post-upgrade Job that DOWNLOADS them over the public
+    # internet and creates VMRule objects from what it gets. The chart's own
+    # defaults point at `main` and `master`.
+    #
+    # Two consequences, both of which the kit already has opinions about:
+    #
+    #   1. An unpinned reference is a latent breaking change, and this one is
+    #      not even in a lockfile — it is resolved fresh on every reconcile.
+    #      Every URL below is therefore pinned to an immutable ref: a release
+    #      tag, or a commit SHA where the upstream repository publishes no
+    #      tags. All 37 resolved 200 on 2026-08-04. Bump them deliberately.
+    #
+    #   2. THE RULES THAT END UP RUNNING ARE NOT IN THIS REPOSITORY. You cannot
+    #      review them by reading the repo, and a rule can be committed here,
+    #      applied, and still not be loaded — the Job can fail, a source can
+    #      404, a group can be filtered out. Alert rules must be verified
+    #      against the RUNNING EVALUATOR, never against the repository. See
+    #      ../README.md for the exact command, and
+    #      ../configs/rules-loaded.yaml for the canary that notices.
+    syncJob:
+      enabled: true
+      # Prune removes rules whose source was removed here. Left on, because an
+      # apply-only path that never removes anything is the failure this whole
+      # delivery model exists to avoid.
+      prune: true
+    defaultRules:
+      enabled: true
+      runbookUrl: https://runbooks.prometheus-operator.dev/runbooks
+      groups:
+        # Disabled to match the scrapes turned off above. Enable both halves
+        # together or you get alerts that can never clear.
+        kubernetes-system-controller-manager:
+          enabled: false
+        kubernetes-system-scheduler:
+          enabled: false
+        kube-scheduler.rules:
+          enabled: false
+        etcd:
+          enabled: false
+      sources:
+        alertmanager:
+          url: https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/v0.18.0/manifests/alertmanager-prometheusRule.yaml
+        kube-state-metrics:
+          url: https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/v0.18.0/manifests/kubeStateMetrics-prometheusRule.yaml
+        kubernetes:
+          url: https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/v0.18.0/manifests/kubePrometheus-prometheusRule.yaml
+        kubernetes-control-plane:
+          url: https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/v0.18.0/manifests/kubernetesControlPlane-prometheusRule.yaml
+        node-exporter:
+          url: https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/v0.18.0/manifests/nodeExporter-prometheusRule.yaml
+        etcd:
+          enabled: false
+          url: https://raw.githubusercontent.com/monitoring-mixins/website/f901a79157f44b141be219b8887a34e4a96212fa/assets/etcd/alerts.yaml
+        vmhealth:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/deployment/docker/rules/alerts-health.yml
+        vmsingle:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/deployment/docker/rules/alerts-single-node.yml
+        vmagent:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/deployment/docker/rules/alerts-vmagent.yml
+        vmalert:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/deployment/docker/rules/alerts-vmalert.yml
+        vmoperator:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/operator/v0.74.0/config/alerting/vmoperator-rules.yaml
+        # VictoriaLogs runs from its own chart, so these two are enabled
+        # explicitly — the chart's condition checks its own vlsingle, which is
+        # off here.
+        victorialogs:
+          enabled: true
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaLogs/v1.52.0/deployment/docker/rules/alerts-vlogs.yml
+        vlhealth:
+          enabled: true
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaLogs/v1.52.0/deployment/docker/rules/alerts-health.yml
+        # Not deployed by this kit — and pinned anyway.
+        #
+        # A disabled floating reference is a floating reference the day
+        # somebody enables it, and they will enable it without reading this
+        # far. The URL still renders into the sync Job's config either way, so
+        # it still has to be pinned for the "no unpinned references" check to
+        # mean anything.
+        vmcluster:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/deployment/docker/rules/alerts-cluster.yml
+        vlagent:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaLogs/v1.52.0/deployment/docker/rules/alerts-vlagent.yml
+        victoriatraces:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaTraces/v0.10.0/deployment/docker/rules/alerts-vtraces.yml
+        vthealth:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaTraces/v0.10.0/deployment/docker/rules/alerts-health.yml
+    defaultDashboards:
+      enabled: true
+      sources:
+        kube-prometheus:
+          url: https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/v0.18.0/manifests/grafana-dashboardDefinitions.yaml
+        kubernetes-system-api-server:
+          url: https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/v3.0.6/dashboards/k8s-system-api-server.json
+        kubernetes-system-coredns:
+          url: https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/v3.0.6/dashboards/k8s-system-coredns.json
+        kubernetes-views-global:
+          url: https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/v3.0.6/dashboards/k8s-views-global.json
+        kubernetes-views-namespaces:
+          url: https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/v3.0.6/dashboards/k8s-views-namespaces.json
+        kubernetes-views-nodes:
+          url: https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/v3.0.6/dashboards/k8s-views-nodes.json
+        kubernetes-views-pods:
+          url: https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/v3.0.6/dashboards/k8s-views-pods.json
+        node-exporter-full:
+          # This upstream publishes no releases, so the pin is a commit.
+          url: https://raw.githubusercontent.com/rfmoz/grafana-dashboards/27aaf9d90dd0080c784e6d25eec25cd58d6e1d7d/prometheus/node-exporter-full.json
+        victoriametrics-single-node:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/dashboards/victoriametrics.json
+        victoriametrics-vmagent:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/dashboards/vmagent.json
+        victoriametrics-vmalert:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/dashboards/vmalert.json
+        victoriametrics-operator:
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/dashboards/operator.json
+        victorialogs-single-node:
+          enabled: true
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaLogs/v1.52.0/dashboards/victorialogs.json
+        etcd:
+          enabled: false
+          url: https://raw.githubusercontent.com/monitoring-mixins/website/f901a79157f44b141be219b8887a34e4a96212fa/assets/etcd/dashboards/etcd.json
+        # Not deployed by this kit — pinned anyway, for the reason given in the
+        # rule sources above.
+        victoriametrics-cluster:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/dashboards/victoriametrics-cluster.json
+        victoriametrics-backupmanager:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaMetrics/v1.148.0/dashboards/backupmanager.json
+        victorialogs-cluster:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaLogs/v1.52.0/dashboards/victorialogs-cluster.json
+        victorialogs-vlagent:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaLogs/v1.52.0/dashboards/vlagent.json
+        victoriatraces-single-node:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaTraces/v0.10.0/dashboards/victoriatraces.json
+        victoriatraces-cluster:
+          enabled: false
+          url: https://raw.githubusercontent.com/VictoriaMetrics/VictoriaTraces/v0.10.0/dashboards/victoriatraces-cluster.json

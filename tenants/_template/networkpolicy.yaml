@@ -1,0 +1,211 @@
+# Network isolation for the namespace.
+#
+# The motivating fact, measured on a mature multi-tenant cluster: thirteen
+# tenant namespaces, zero NetworkPolicies. Every tenant could reach every other
+# tenant's database over the pod network, and the cluster looked completely
+# healthy doing it. The CNI had enforced policy the whole time. Nobody had
+# written any.
+#
+# That is why these are generated with the namespace and not offered as an
+# option. A CNI that CAN enforce policy is not a cluster that HAS any, and the
+# gap is authorship rather than capability — which is also why swapping the CNI
+# would not have fixed it, only hidden it behind a more capable tool.
+#
+# ---------------------------------------------------------------------------
+# THE LIMIT, STATED RATHER THAN DISCOVERED
+#
+# Standard NetworkPolicy expresses egress destinations as pod selectors,
+# namespace selectors and CIDR blocks. It has no concept of a hostname.
+#
+# So "this tenant may reach api.example.com and nothing else on the internet"
+# IS NOT EXPRESSIBLE HERE. It cannot be approximated either: the addresses
+# behind any interesting hostname are a CDN's, they change without notice, and
+# a CIDR that covers them today covers a few million other things as well.
+#
+# What is expressible is the coarse version below — everything except the
+# private ranges and the cloud metadata endpoint, on one port. Treat that as
+# "not accidentally inside the cluster", not as "only the intended service".
+#
+# The kit's answer to the finer requirement is documented rather than shipped:
+# a CNI with FQDN policy support, chosen when the cluster is built because the
+# CNI is a create-time choice on this node module and is not migrated to later.
+# That is the reason to opt into one, and it is the only reason that survived
+# scrutiny.
+# ---------------------------------------------------------------------------
+
+# 1. Default deny, both directions.
+#
+# An empty podSelector selects every pod in the namespace. Naming both
+# policyTypes with no rules underneath is what makes this a deny rather than a
+# no-op: a policy listing Egress with no egress rules denies all egress, while
+# a policy that simply omits the section denies nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: tenant-REPLACE-tenant
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. Ingress from the gateway.
+#
+# The one way traffic enters this namespace from outside. Selecting the
+# gateway by a namespace LABEL rather than by name keeps this file independent
+# of which controller implements the Gateway and which namespace it was
+# installed into; the label is declared once, in platform/configs, and
+# referenced here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-gateway
+  namespace: tenant-REPLACE-tenant
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              platform.example.com/role: gateway
+          # Narrow this to the gateway's own pods once the controller's pod
+          # labels are settled. As written, any pod in the gateway namespace
+          # may reach this tenant.
+          #
+          # podSelector:
+          #   matchLabels:
+          #     app.kubernetes.io/name: <gateway controller>
+---
+# 3. Egress to cluster DNS.
+#
+# Under a default-deny egress policy, name resolution is the first thing to
+# break, and it breaks as "connection timed out" from the application rather
+# than as anything mentioning DNS.
+#
+# BOTH protocols are required. A UDP-only rule works until a response exceeds
+# the UDP payload limit, at which point the resolver retries over TCP and hangs
+# — an intermittent failure that scales with the size of the answer, which is
+# to say it appears in production and not in testing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: tenant-REPLACE-tenant
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 4. Traffic within the namespace.
+#
+# A tenant's own pods reaching each other. Shipped as a separate policy rather
+# than folded into the deny, so that a tenant whose workloads must not talk to
+# each other can drop this one file without unpicking anything else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: tenant-REPLACE-tenant
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+# 5. Egress for the backup job.
+#
+# The backup CronJob pushes to object storage outside the cluster, so
+# default-deny egress would otherwise turn every backup into a timeout — and a
+# backup that cannot reach its repository is exactly the failure this kit
+# refuses to let pass silently.
+#
+# This is the CIDR-only limit made concrete. The rule cannot say "the object
+# storage endpoint". It says "not the cluster, not the node network, not the
+# link-local range, port 443" and accepts that this also permits every other
+# host on the internet.
+#
+# The `except` entries are doing real work:
+#   - the RFC1918 ranges keep this from becoming a hole back into the cluster
+#     and the node network, which is the whole point of the deny above;
+#   - 169.254.0.0/16 covers the cloud metadata endpoint at 169.254.169.254.
+#     It is reachable from every pod on every node by default and answers
+#     instance identity and, on some configurations, credentials. A blanket
+#     egress allowance that forgets it hands that to any workload that asks.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-backup
+  namespace: tenant-REPLACE-tenant
+spec:
+  podSelector:
+    matchLabels:
+      platform.example.com/component: backup
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# 6. Egress the tenant declares.
+#
+# Every destination a tenant workload needs outside the namespace goes here, as
+# its own rule, with a comment naming what it is for. Shipped empty on purpose:
+# an empty list is a legible statement that this tenant has no external
+# dependencies, whereas a permissive placeholder rule is indistinguishable from
+# a considered one six months later.
+#
+# The Kubernetes API server is the usual first entry, and the usual first
+# surprise. It is not a pod, so it cannot be selected as one; it is reached at
+# a node address on port 6443, which means a CIDR covering the node network —
+# and the RFC1918 exception in the rule above means the backup allowance does
+# not cover it either.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-declared
+  namespace: tenant-REPLACE-tenant
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress: []
+  # Example — the Kubernetes API server, for a workload using client-go:
+  #
+  # egress:
+  #   - to:
+  #       - ipBlock:
+  #           cidr: <node network CIDR>/24
+  #     ports:
+  #       - protocol: TCP
+  #         port: 6443

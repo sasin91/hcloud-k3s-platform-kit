@@ -1,0 +1,310 @@
+# The tenant's backup. One restic repository per namespace.
+#
+# Two things are encoded here that no amount of documentation reliably
+# produces, and both are the reason this job is generated with the namespace
+# instead of recommended:
+#
+#   1. IT ASSERTS ON ITS OUTPUT, NOT ON ITS EXIT STATUS.
+#
+#      Every widely used backup tool has at least one path where a run reports
+#      success having captured nothing — a selector matching no resources, an
+#      unmounted volume silently skipped, a zero-volume run exiting clean, a
+#      dump piped to standard input producing a valid, empty archive. In
+#      several cases upstream is still arguing about whether that counts as a
+#      bug.
+#
+#      A green empty backup is worse than a failed one. A failure rings the
+#      alarm; a green empty run silences it, and it stays silenced until a
+#      restore is attempted, which is the one moment when nothing can be done
+#      about it.
+#
+#      So this job reads back what actually landed in the repository and fails
+#      if it is smaller than a declared floor. That check cannot be bolted on
+#      afterwards by an alert rule — an alert can only see what the job
+#      reports, and the job reports success.
+#
+#   2. IT PASSES A STABLE --host.
+#
+#      restic's `forget` groups snapshots by host and path before applying any
+#      retention policy. A pod's hostname is generated per run, so without an
+#      explicit host every single run forms its own group, every group keeps
+#      its own newest snapshot, and NOTHING IS EVER FORGOTTEN. Retention
+#      appears to be configured, `forget` exits zero every night, and the
+#      repository grows for ever.
+#
+#      The bill is the symptom, months later, and the cause does not look like
+#      a bug in anything.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS DOES NOT SOLVE
+#
+# An application volume held by a running pod. The provider's volumes are
+# single-writer, and a plain CronJob does nothing to co-schedule itself onto
+# the node already holding the volume, so the backup pod can fail to attach.
+# The documented upgrade path is a node-pinning backup operator (k8up at
+# v2.15.0 or later — earlier versions silently truncated dumps); its custom
+# resources are namespaced and drop into this same template.
+#
+# The path that avoids the problem entirely is the database dump below: it
+# never touches a volume.
+#
+# WHY THIS JOB CANNOT SUCCEED UNTIL IT IS POINTED AT REAL DATA
+#
+# As shipped it mounts a PVC that does not exist yet, so the pod stays Pending
+# and the dead-man's-switch alert fires. That is deliberate. The alternative —
+# a job that succeeds against an empty directory — is precisely the green empty
+# backup this file exists to prevent.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  namespace: tenant-REPLACE-tenant
+  labels:
+    platform.example.com/component: backup
+spec:
+  schedule: "17 2 * * *"
+  timeZone: Etc/UTC
+
+  # Never two at once. `prune` takes an exclusive lock on the repository, and a
+  # second run arriving while the first holds it either waits or, worse,
+  # tempts somebody into running `unlock` from a script.
+  concurrencyPolicy: Forbid
+
+  # Bounded, and not omitted.
+  #
+  # A CronJob that misses 100 scheduled starts stops creating Jobs
+  # permanently, logging one line into the controller manager and nothing
+  # else. At an hourly schedule that is about four days; at this daily
+  # schedule it is longer, but the failure mode is the same and it is silent.
+  # A starting deadline caps how many missed starts can accumulate.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            # Selected by allow-egress-backup in networkpolicy.yaml. Without
+            # this label the pod inherits default-deny egress and every backup
+            # is a timeout against the object store.
+            platform.example.com/component: backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            # Applied to the mounted volume's group ownership. A volume whose
+            # files are owned by root and readable only by root produces a
+            # partial backup rather than a failed one — see the note on exit
+            # code 3 in the script.
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: restic
+              # Pinned by tag AND by digest. The tag says which version this
+              # is; the digest is what makes it that version tomorrow. Both,
+              # because a digest alone is unreadable and a tag alone is
+              # mutable.
+              #
+              # restic 0.19.1, digest resolved 2026-08-04.
+              image: docker.io/restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                # The stable host identifier. See the header — this is the
+                # difference between retention working and retention being
+                # decorative. The tenant name is used because it is the one
+                # value that is guaranteed unique per repository.
+                - name: BACKUP_HOST
+                  value: REPLACE-tenant
+
+                - name: BACKUP_PATH
+                  value: /data
+
+                # The floor the captured snapshot must clear, in bytes.
+                #
+                # A floor of zero is not an assertion. Set this to something
+                # comfortably below the real size and comfortably above empty;
+                # the point is to catch "captured nothing", not to track
+                # growth.
+                - name: MIN_SNAPSHOT_BYTES
+                  value: "1048576"
+
+                - name: RESTIC_CACHE_DIR
+                  value: /tmp/restic-cache
+                - name: HOME
+                  value: /tmp
+              envFrom:
+                # RESTIC_REPOSITORY, RESTIC_PASSWORD and the object storage
+                # credentials. See backup-secret.example.yaml — the real one is
+                # SOPS-encrypted, and one repository per namespace means one
+                # secret per namespace.
+                - secretRef:
+                    name: backup-repository
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              command:
+                - /bin/sh
+                - -eu
+                - -c
+                - |
+                  # Fail before touching the repository if anything is missing.
+                  # An unset RESTIC_REPOSITORY does not error usefully later —
+                  # it changes what restic thinks the repository is.
+                  : "${RESTIC_REPOSITORY:?not set}"
+                  : "${RESTIC_PASSWORD:?not set}"
+                  : "${BACKUP_HOST:?not set}"
+                  : "${BACKUP_PATH:?not set}"
+                  : "${MIN_SNAPSHOT_BYTES:?not set}"
+
+                  # Initialise on first run only. `cat config` fails both when
+                  # the repository is absent and when the endpoint is
+                  # unreachable, so a broken endpoint fails `init` too and the
+                  # job goes red — rather than quietly starting a second,
+                  # empty repository somewhere else.
+                  restic cat config >/dev/null 2>&1 || restic init
+
+                  # --host: see the header. --json so the summary can be read
+                  # back rather than parsed out of human-readable output that
+                  # changes between releases.
+                  #
+                  # Redirected to a file, NOT piped. `restic backup | tee`
+                  # reports tee's exit status, which is the same class of
+                  # mistake as `mysqldump | restic backup --stdin` reporting
+                  # restic's: the failing command is not the one whose status
+                  # is checked.
+                  #
+                  # `set -e` aborts here on any non-zero status. Note in
+                  # particular exit code 3, "source data unreadable": restic
+                  # STILL CREATES A SNAPSHOT in that case, containing whatever
+                  # it could read. Treating 3 as success is how a backup ends
+                  # up holding half a data directory and looking fine.
+                  restic backup \
+                    --host "$BACKUP_HOST" \
+                    --tag scheduled \
+                    --json \
+                    "$BACKUP_PATH" > /tmp/backup.json
+                  cat /tmp/backup.json
+
+                  snapshot_id=$(sed -n 's/.*"message_type":"summary".*"snapshot_id":"\([a-f0-9]*\)".*/\1/p' /tmp/backup.json | tail -n 1)
+                  if [ -z "$snapshot_id" ]; then
+                    echo "FAIL: restic exited zero but produced no summary and no snapshot id"
+                    exit 1
+                  fi
+
+                  # ---------------------------------------------------------
+                  # The assertion. Read the snapshot back OUT of the
+                  # repository and check what is in it.
+                  #
+                  # Deliberately not the run's own summary: the summary is what
+                  # the run claims it did. This is what the repository will
+                  # actually give back at restore time, which is the only thing
+                  # that matters.
+                  # ---------------------------------------------------------
+                  restic stats --mode restore-size --json "$snapshot_id" > /tmp/stats.json
+                  cat /tmp/stats.json
+
+                  size=$(sed -n 's/.*"total_size":\([0-9]*\).*/\1/p' /tmp/stats.json)
+                  files=$(sed -n 's/.*"total_file_count":\([0-9]*\).*/\1/p' /tmp/stats.json)
+                  size=${size:-0}
+                  files=${files:-0}
+
+                  if [ "$files" -lt 1 ]; then
+                    echo "FAIL: snapshot $snapshot_id contains no files. A green empty backup is worse than a failed one."
+                    exit 1
+                  fi
+                  if [ "$size" -lt "$MIN_SNAPSHOT_BYTES" ]; then
+                    echo "FAIL: snapshot $snapshot_id restores to $size bytes, below the declared floor of $MIN_SNAPSHOT_BYTES."
+                    exit 1
+                  fi
+                  echo "OK: snapshot $snapshot_id, $files files, $size bytes"
+
+                  # Retention. --host and --group-by are both explicit: the
+                  # grouping is the whole trap, and relying on the default
+                  # here means relying on it not changing.
+                  #
+                  # --retry-lock rather than a blind `unlock`. restic's stale
+                  # lock detection is 30 minutes and only applies to locks from
+                  # the same machine, so `unlock` in a script is a way to
+                  # corrupt a repository while another run is writing to it.
+                  restic forget \
+                    --host "$BACKUP_HOST" \
+                    --group-by host,paths \
+                    --keep-daily 7 \
+                    --keep-weekly 4 \
+                    --keep-monthly 6 \
+                    --prune \
+                    --retry-lock 30m
+
+                  # Assert once more, after retention. A policy that forgets
+                  # everything it just wrote is a real outcome — it is what a
+                  # changed host identifier looks like — and it exits zero.
+                  restic snapshots --host "$BACKUP_HOST" --latest 1 --json > /tmp/snapshots.json
+                  if ! grep -q '"short_id"' /tmp/snapshots.json; then
+                    echo "FAIL: no snapshot remains for host $BACKUP_HOST after forget"
+                    exit 1
+                  fi
+
+                  # ---------------------------------------------------------
+                  # THE DATABASE PATH, for a tenant running one.
+                  #
+                  # Replace the volume backup above with this. It needs an
+                  # image containing BOTH restic and the database client, which
+                  # this kit does not ship — build one, pin it by digest, and
+                  # keep the assertions.
+                  #
+                  #   restic backup \
+                  #     --host "$BACKUP_HOST" \
+                  #     --tag db \
+                  #     --json \
+                  #     --stdin-from-command \
+                  #     --stdin-filename db.sql \
+                  #     -- mariadb-dump --single-transaction --databases app > /tmp/backup.json
+                  #
+                  # --stdin-from-command and never a shell pipeline. In
+                  # `mariadb-dump ... | restic backup --stdin`, a dump that
+                  # fails to connect still produces a valid, EMPTY snapshot and
+                  # restic exits zero, because a pipeline reports the last
+                  # command's status. `set -e` does not catch it. With
+                  # --stdin-from-command a non-zero status from the dump
+                  # cancels the backup and no snapshot is created.
+                  #
+                  # PostgreSQL needs two runs: pg_dump for the database and
+                  # pg_dumpall --globals-only for roles and grants. A restore
+                  # from the first alone comes up with no users.
+                  #
+                  # Do not back up a running database's volume instead. Both
+                  # MySQL and PostgreSQL document that a file copy of a live
+                  # data directory is not a usable backup — and it restores
+                  # SOMETIMES, which is the worst property a backup can have.
+                  # ---------------------------------------------------------
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                # Rename to this tenant's volume. It does not exist as shipped,
+                # which is what keeps a fresh tenant from reporting successful
+                # backups of nothing.
+                claimName: REPLACE-tenant-data
+                readOnly: true
+            - name: tmp
+              # The root filesystem is read-only, so restic's cache, its lock
+              # files and the JSON this script reads back all live here.
+              emptyDir:
+                sizeLimit: 2Gi

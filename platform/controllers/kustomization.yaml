@@ -1,0 +1,21 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# This directory is the entry point the cluster's `infrastructure` reconciliation
+# points at. It deliberately contains almost nothing: two sources and two
+# ordering edges.
+#
+# WHY the indirection. Custom resource definitions must exist before anything
+# that uses them is applied. A resource whose definition has not been
+# established yet fails, retries, and eventually succeeds — which reads as
+# flakiness rather than as a missing dependency edge, and that is how ordering
+# bugs survive for years. The edge is therefore declared, not hoped for.
+#
+# It has to be declared between two Kustomizations because a HelmRelease cannot
+# depend on one: `spec.dependsOn` on a HelmRelease refers to other HelmReleases
+# only. So the controllers that need Gateway API CRDs live one directory down,
+# behind a Kustomization that can express the dependency.
+resources:
+  - sources.yaml
+  - stages.yaml

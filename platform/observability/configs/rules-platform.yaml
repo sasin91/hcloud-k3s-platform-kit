@@ -1,0 +1,164 @@
+---
+# Alerts about the observability layer itself.
+#
+# The imported upstream rule sets — kube-prometheus, node-exporter, and
+# VictoriaMetrics' own — cover Kubernetes and the VM components well, and none
+# of that is duplicated here. What is here is what nobody upstream can know:
+# the consequences of THIS storage decision, THIS log shipper, and THIS set of
+# probes.
+#
+# Note also what is deliberately absent. There is no "traces are not arriving"
+# alert, because on a cluster where nothing is instrumented yet it fires
+# forever, and a permanently-firing alert teaches people to close the tab. Add
+# it when you have instrumentation to lose.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: observability-platform
+  namespace: observability
+spec:
+  groups:
+    # ----------------------------------------------------------------
+    - name: observability-storage
+      interval: 1m
+      rules:
+        # Storage here is not like storage elsewhere. The provider's block
+        # volumes are single-writer and support no snapshots at all, so:
+        # there is no "restore yesterday's disk", adding a replica does not add
+        # capacity, and growing the volume interrupts the pod holding it.
+        # Running out of room is therefore a planned maintenance window, and
+        # these two alerts exist to make sure it is a planned one.
+        - alert: ObservabilityVolumeAlmostFull
+          expr: |-
+            kubelet_volume_stats_available_bytes{namespace="observability"}
+              /
+            kubelet_volume_stats_capacity_bytes{namespace="observability"}
+              < 0.15
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.persistentvolumeclaim }} is over 85% full"
+            description: >-
+              Under 15% free. This volume cannot be snapshotted and cannot be
+              shared, and expanding it means stopping the workload that holds
+              it. Decide now between shortening retention and scheduling a
+              resize; do not discover the choice when it is made for you.
+
+        - alert: ObservabilityVolumeWillFillSoon
+          # Extrapolating six hours of trend four days forward. Deliberately
+          # long: the point is to leave enough time to schedule the outage that
+          # a resize requires, not to warn at the last minute.
+          expr: |-
+            predict_linear(
+              kubelet_volume_stats_available_bytes{namespace="observability"}[6h],
+              4 * 24 * 3600
+            ) < 0
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.persistentvolumeclaim }} is on track to fill within four days"
+            description: >-
+              At the current rate this volume runs out inside four days. The
+              stores have different failure behaviours when they do —
+              VictoriaMetrics switches to read-only, VictoriaLogs drops old
+              data once its disk ceiling is reached, and Tempo has no disk
+              ceiling at all and will simply fail to flush blocks.
+
+    # ----------------------------------------------------------------
+    - name: observability-logs
+      interval: 1m
+      rules:
+        # A log shipper missing from a node is the quietest failure in this
+        # whole layer. Everything looks healthy, dashboards still return data,
+        # and one machine's logs simply do not exist — usually the machine you
+        # want them from, because the reason it is not running the shipper and
+        # the reason you are looking are often the same reason.
+        - alert: LogShipperNotOnEveryNode
+          expr: |-
+            kube_daemonset_status_number_ready{namespace="observability", daemonset=~".*vector.*"}
+              <
+            kube_daemonset_status_desired_number_scheduled{namespace="observability", daemonset=~".*vector.*"}
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Container logs are not being collected from every node"
+            description: >-
+              {{ $value }} fewer shipper pods are ready than nodes expect them.
+              Logs produced on those nodes during this window are lost, not
+              delayed — there is no catch-up, and nothing else will report the
+              gap.
+
+        - alert: LogIngestionStopped
+          # Every pod on a working cluster produces log lines, so a sink that
+          # has sent nothing for a quarter of an hour is broken rather than
+          # idle. This is the assertion-on-output principle from the backup
+          # design applied to the log pipeline: a green pod is not evidence of
+          # a working pipeline.
+          expr: |-
+            sum(rate(vector_component_sent_events_total{component_kind="sink"}[15m])) == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The log pipeline has sent no events for 15 minutes"
+            description: >-
+              Vector is running and forwarding nothing. Check the sink's
+              connection to VictoriaLogs before assuming the cluster went quiet.
+
+        - alert: LogEventsBeingDiscarded
+          expr: |-
+            sum(rate(vector_component_discarded_events_total[15m])) > 0
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: "The log pipeline is discarding events"
+            description: >-
+              Events are entering the pipeline and not leaving it. Usually
+              backpressure from the store, which on this storage means the disk
+              ceiling has been reached rather than that the store is slow.
+
+    # ----------------------------------------------------------------
+    - name: observability-probes
+      interval: 1m
+      rules:
+        - alert: ProbeFailing
+          expr: probe_success == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Probe of {{ $labels.instance }} is failing"
+            description: >-
+              The target is not answering the way a client would be answered.
+              This is deliberately independent of whether its pods are Ready:
+              the interesting cases are the ones where they are.
+
+        - alert: ProbeCertificateExpiringSoon
+          # This measures the certificate BEING SERVED, which is a different
+          # fact from the certificate resource being Ready. A renewed
+          # certificate that the proxy never picked up is Ready in the cluster
+          # and expired on the wire, and only one of those two facts is visible
+          # to a client.
+          expr: |-
+            probe_ssl_earliest_cert_expiry - time() < 14 * 24 * 3600
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Certificate served by {{ $labels.instance }} expires in under 14 days"
+            description: >-
+              Fourteen days is chosen to be longer than any plausible renewal
+              window plus a holiday. If the certificate controller believes it
+              has already renewed this, the problem is delivery, not issuance.
+
+        - alert: ProbeCertificateExpired
+          expr: probe_ssl_earliest_cert_expiry - time() <= 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Certificate served by {{ $labels.instance }} has expired"

@@ -1,0 +1,196 @@
+# Infrastructure layer
+
+Builds the cluster. Nothing else.
+
+This configuration produces nodes, a network, a firewall and a working
+kubeconfig, and it stops there. Ingress, certificates, observability, tenancy
+and backups are delivered by the GitOps layer from manifests you can read in
+your own diff — see the repository root.
+
+> **Nothing here has been verified against a running cluster.** Two things have
+> been measured and say so where they are configured: the object storage
+> supports conditional writes, so native state locking is real; and its default
+> checksum behaviour works, so no checksum workaround ships. Everything else is
+> reasoned, not tested. Prices, instance types and availability quoted in these
+> files are dated observations, not permanent properties.
+
+---
+
+## What is decided here
+
+| Decision | Value | Where the reasoning lives |
+|---|---|---|
+| Tool | OpenTofu, not Terraform | `versions.tf` — state *and plan* encrypt client-side |
+| Cluster creation | `kube-hetzner/kube-hetzner/hcloud`, pinned `~> 3.0` | `main.tf` — consumed, not forked |
+| State | S3-compatible object storage, versioned, `use_lockfile` | `versions.tf` |
+| Control plane | Three nodes, x86 | `main.tf` |
+| Architecture | x86 only | `main.tf` — Arm was unavailable region-wide when decided |
+| Autoscaler | One active pool; a cross-location fallback ships commented out | `main.tf` |
+| etcd snapshots | On, to a separate expiring bucket | `main.tf` |
+| CNI | Flannel. Cilium opt-in only | `main.tf` |
+| Egress nodepool | None | `main.tf` — no mechanism, so no pool |
+
+Comments in those files explain *why* at the line that executes. That is
+deliberate: prose drifts, and the lesson belongs where the decision is made.
+
+---
+
+## Day zero
+
+### 1. Create an object-storage credential, by hand
+
+In the provider's console. This step is irreducible — the provider's CLI
+manages a different storage product entirely and exposes no object-storage
+commands. There is no flag for it; do not go looking for one.
+
+### 2. Create the buckets
+
+```sh
+export AWS_ACCESS_KEY_ID=…
+export AWS_SECRET_ACCESS_KEY=…
+export STATE_BUCKET=your-tofu-state
+export SNAPSHOT_BUCKET=your-etcd-snapshots
+export S3_ENDPOINT=https://fsn1.your-objectstorage.com
+export S3_REGION=fsn1
+
+../../scripts/bootstrap-buckets.sh
+```
+
+Two buckets, not two prefixes. They carry opposite lifecycle policies — state
+keeps versions forever, snapshots expire — and one bucket puts state history
+one prefix pattern away from an expiry rule. The script refuses to run if both
+names are the same.
+
+### 3. Point the backend at them
+
+The backend block in `versions.tf` takes **no variables** — a backend is
+configured before the variable system exists. Either edit the three lines marked
+`PLACEHOLDER`, or delete them and use partial configuration, which keeps your
+bucket names out of the repository:
+
+```hcl
+# backend.hcl — gitignored
+bucket    = "your-tofu-state"
+region    = "fsn1"
+endpoints = { s3 = "https://fsn1.your-objectstorage.com" }
+```
+
+```sh
+tofu init -backend-config=backend.hcl
+```
+
+This is the one place in the kit where the storage endpoint is written twice —
+here, and as a bare host for etcd's snapshot config. If you change one, change
+the other.
+
+### 4. Fill in the variables
+
+```sh
+cp terraform.tfvars.example terraform.tfvars
+```
+
+`terraform.tfvars` must be gitignored before you put anything real in it. The
+example file ships placeholders that are deliberately invalid — a copied but
+unedited file fails validation rather than quietly working — but that is not a
+substitute for the ignore rule.
+
+Secrets are better supplied from the environment than from a file living next to
+your state:
+
+```sh
+export TF_VAR_hcloud_token=…
+export TF_VAR_object_storage_access_key=…
+export TF_VAR_object_storage_secret_key=…
+export TF_VAR_state_passphrase='at least sixteen characters'
+```
+
+`TF_VAR_state_passphrase` must be set **before `tofu init`**. Encryption is
+configured before any state is read, so there is nothing to prompt from.
+
+Losing that passphrase means losing the ability to read your own state. Store it
+wherever you store the age key — same class of secret, same fate.
+
+### 5. Build
+
+```sh
+tofu init
+tofu plan
+tofu apply
+```
+
+`tofu`, not `terraform`. Terraform will fail on the `encryption` block, which is
+the point: the requirement is enforced rather than documented.
+
+### 6. Tell the autoscaler which pool to prefer
+
+```sh
+tofu output -raw autoscaler_priority_expander_manifest | kubectl apply -f -
+```
+
+Generated from the same list that configures the pools, so it can never name a
+group that does not exist or omit one that does. It is an output rather than a
+managed resource because applying it would need a Kubernetes provider configured
+from this module's own output — unknown at plan time on a fresh cluster, so the
+first `tofu plan` would fail and the fix would be a two-phase apply. Committing
+it to the delivery layer instead is equally correct.
+
+Applying it late is safe: when the ConfigMap is absent the autoscaler skips the
+priority expander and falls through to `least-waste`. Missing configuration
+degrades the choice; it does not break scaling.
+
+---
+
+## Before every apply, and then on a schedule
+
+**Check that every `server_type` is currently *available* in its location — not
+merely *supported*.** They are different fields in the provider API. A pool
+naming a supported-but-unavailable type validates, plans and applies cleanly,
+and then fails at the moment you need to scale, which is by definition the worst
+moment.
+
+This is not a one-time check. A pool created when its type was in stock keeps
+that type in its configuration forever; stock moves and the configuration does
+not. The kit's scheduled guardrail exists for exactly this.
+
+The commented-out fallback pool is subject to the same rule and one more: treat
+it as **unproven until it has provisioned a node at least once**. A fallback
+naming an equally unavailable type protects nobody, and its presence is what
+stops anyone from looking.
+
+---
+
+## Things that are on, and cost money
+
+- **Three control plane nodes.** Three is the smallest HA etcd quorum, and it
+  must be odd — two nodes is strictly worse than one.
+- **etcd snapshots to object storage**, on a schedule, into a bucket with an
+  expiry rule.
+
+Both are defaults here because the alternative is a cluster that looks fine
+until the day it does not.
+
+---
+
+## Retention appears twice, on purpose
+
+k3s prunes the snapshots it knows about (`etcd_snapshot_retention`). The bucket
+lifecycle rule (`SNAPSHOT_EXPIRY_DAYS`) is the backstop for everything it does
+not know about — snapshots left by a control plane that has been replaced, or by
+a cluster that no longer exists.
+
+Keep the bucket rule strictly longer than what the k3s retention implies, or the
+backstop starts deleting snapshots k3s still considers live.
+
+---
+
+## Upgrading the module pin
+
+`~> 3.0` accepts 3.x and refuses 4.0. Widening it is not a version bump: read
+upstream's `MIGRATION.md` first. Its v2→v3 notes rename inputs, invert booleans
+and change nested shapes in a single tag — which is the reason nothing in this
+kit references a module or chart without a version constraint.
+
+Review `k3s_channel` at the same time. It is pinned to a minor channel rather
+than `stable`, because `stable` is an unpinned dependency wearing a reassuring
+name: it crosses minor boundaries on somebody else's schedule, and with
+automatic upgrades on that happens without a diff in this repository.

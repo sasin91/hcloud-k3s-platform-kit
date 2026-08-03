@@ -1,0 +1,181 @@
+# Which hostnames a tenant's routes may claim.
+#
+# ---------------------------------------------------------------------------
+# THE HOLE THIS CLOSES
+#
+# Certificates come from a single shared issuer, and issuance is driven by the
+# hostnames on a route. So any tenant able to create a route can request a
+# certificate for ANY hostname — including one belonging to another tenant —
+# and two things follow immediately:
+#
+#   - the route claims the hostname. Traffic for another tenant's domain is
+#     matched by the attacker's route, on the shared gateway, with a valid
+#     certificate;
+#   - the issuance is charged against shared rate limits. A tenant looping on
+#     certificate requests exhausts the account's limits for every other tenant
+#     on the cluster, and that exhaustion outlasts the deletion of whatever
+#     caused it.
+#
+# PER-NAMESPACE ISSUERS DO NOT FIX THIS. An issuer decides which account signs
+# a certificate; it does not decide which hostname a route may claim. Give
+# every tenant its own issuer and the second tenant's route still matches the
+# first tenant's hostname on the gateway, and still obtains a certificate for
+# it — from its own issuer, against its own limits. The restriction has to be
+# on the claim, not on the signature.
+#
+# WHY THIS IS ENFORCED WHEN EVERYTHING ELSE IN THE TENANT CONTRACT IS
+# GENERATED AND REPORTED
+#
+# Enforce at admission when a tenant's ACTION takes something from another
+# tenant at the moment it happens. Generate and check standing configuration,
+# where the failure is an absence rather than an act. An absent quota is a gap
+# for somebody to close; a hostname is gone by the time a report runs, and so
+# is the rate limit.
+#
+# WHY A ValidatingAdmissionPolicy AND NOT A POLICY ENGINE
+#
+# This is core Kubernetes API machinery, generally available since 1.30. No
+# operator, no webhook server, no certificate rotation for that webhook, no
+# component whose own outage decides whether the cluster accepts writes. One
+# CEL expression evaluated in the API server.
+#
+# MINIMUM VERSION: Kubernetes 1.30.
+# ---------------------------------------------------------------------------
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: httproute-hostname-authorization
+spec:
+  # Fail closed. This is a security boundary, so a policy that cannot be
+  # evaluated blocks route creation rather than silently permitting hostname
+  # theft. The failure is loud, in the namespace of whoever tried, and it is
+  # recoverable by fixing the policy — which is not true of the alternative.
+  failurePolicy: Fail
+
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["gateway.networking.k8s.io"]
+
+        # Every version, present and future.
+        #
+        # Listing versions explicitly is a bypass waiting to be discovered:
+        # the object is admitted under any version not named, and the day the
+        # cluster gains a new one, the policy quietly stops covering the
+        # resource it was written for. The hostnames field has the same shape
+        # across versions, so there is nothing to gain by narrowing this.
+        apiVersions: ["*"]
+
+        operations: ["CREATE", "UPDATE"]
+
+        # GRPCRoute carries the same hostnames field and reaches the same
+        # gateway, so leaving it out would close the front door and leave the
+        # side one open. A rule naming a resource whose definition is not
+        # installed simply never matches.
+        #
+        # TLSRoute is not listed: it is in the experimental channel and the kit
+        # ships the standard channel. Add it here the day that changes.
+        resources: ["httproutes", "grpcroutes"]
+
+        scope: Namespaced
+
+  variables:
+    - name: annotations
+      expression: |-
+        has(namespaceObject.metadata.annotations)
+          ? namespaceObject.metadata.annotations
+          : {}
+
+    # The authorised domains, from the namespace the route is being created in.
+    #
+    # A namespace with no annotation yields an empty list, and an empty list
+    # authorises nothing — every hostname is rejected. That is the intended
+    # direction: a missing declaration blocks routing rather than opening it,
+    # and the failure appears the first time a tenant tries to route rather
+    # than the first time someone audits.
+    #
+    # The list is split on commas and nothing else. No trimming: an entry with
+    # a stray space matches nothing and the route is rejected with the list
+    # printed in the message, which is a legible mistake. Silently accepting
+    # whitespace would mean the policy's idea of the authorised domains and the
+    # reader's differ, and the difference would only ever show up as an
+    # unexpected acceptance.
+    - name: domains
+      expression: |-
+        'platform.example.com/domains' in variables.annotations
+          ? variables.annotations['platform.example.com/domains'].split(',')
+          : []
+
+    - name: hostnames
+      expression: |-
+        has(object.spec.hostnames) ? object.spec.hostnames : []
+
+  validations:
+    # A route with no hostnames is not a route claiming nothing. It inherits
+    # the hostname of the gateway listener it attaches to — so on a shared
+    # gateway with a wildcard listener, an empty hostnames field claims
+    # EVERYTHING the gateway serves, which is the maximal version of the attack
+    # this policy exists to stop.
+    #
+    # It has to be rejected explicitly, because the authorisation check below
+    # is vacuously true over an empty list.
+    - expression: "size(variables.hostnames) > 0"
+      reason: Forbidden
+      message: >-
+        A route in a tenant namespace must declare at least one hostname. A
+        route with no hostnames inherits the gateway listener's hostname, which
+        on a shared gateway means claiming every hostname it serves.
+
+    # The authorisation itself.
+    #
+    # An entry authorises the domain and everything under it: `example.com`
+    # covers `example.com`, `www.example.com` and `*.example.com`. It does not
+    # cover `notexample.com` — the dot in the suffix comparison is what makes
+    # that true, and removing it turns this check into a substring match that
+    # authorises any domain ending in the right letters.
+    #
+    # lowerAscii on both sides because hostname comparison is
+    # case-insensitive, and a policy that can be evaded by capitalising a
+    # letter is not a policy.
+    - expression: |-
+        variables.hostnames.all(h,
+          variables.domains.exists(d,
+            h.lowerAscii() == d.lowerAscii() ||
+            h.lowerAscii().endsWith('.' + d.lowerAscii())
+          )
+        )
+      reason: Forbidden
+      messageExpression: |-
+        'Route hostnames ' + variables.hostnames.join(', ') +
+        ' are not authorised for namespace ' + namespaceObject.metadata.name +
+        '. Authorised domains: ' +
+        (size(variables.domains) == 0
+          ? '(none declared - set the platform.example.com/domains annotation on the namespace)'
+          : variables.domains.join(', '))
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: httproute-hostname-authorization
+spec:
+  policyName: httproute-hostname-authorization
+
+  # Deny, not Warn, not Audit. A warning is a record that a tenant took another
+  # tenant's hostname.
+  validationActions: [Deny]
+
+  matchResources:
+    # Tenants only.
+    #
+    # The platform creates routes for its own components — a gateway's own
+    # status endpoints, an opt-in exposure of something in a platform
+    # namespace — and those namespaces declare no domain list, so binding this
+    # cluster-wide would block them.
+    #
+    # This is safe because of a fact established elsewhere: the label is
+    # applied by the platform's reconciliation, and a tenant's Role grants no
+    # verb on namespaces. A tenant cannot remove its own label to escape the
+    # binding. If that ever stops being true, this selector becomes the
+    # weakest part of the policy rather than a convenience.
+    namespaceSelector:
+      matchLabels:
+        platform.example.com/managed: tenant

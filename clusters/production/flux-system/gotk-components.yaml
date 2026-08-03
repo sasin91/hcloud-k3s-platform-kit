@@ -1,0 +1,52 @@
+# ============================================================================
+# PLACEHOLDER — THIS IS NOT THE REAL FLUX COMPONENT MANIFEST
+# ============================================================================
+#
+# The real file is ~7,000 lines of CustomResourceDefinitions, RBAC and four
+# controller Deployments. It is generated, never written by hand:
+#
+#     ./scripts/generate-flux-components.sh
+#
+# It was not generated here because the `flux` command-line tool was not
+# present on the machine that laid this directory out, and a component
+# manifest reconstructed from memory is a manifest that lies. Nothing about
+# it would look wrong in review; it would fail in the cluster, months later,
+# in a way nobody would trace back to this file.
+#
+# WHY NOT DOWNLOAD THE RELEASE ASSET INSTEAD
+#
+# The `install.yaml` asset attached to a Flux release is the *superset*: it
+# carries all seven controllers, including image-reflector-controller,
+# image-automation-controller and source-watcher. Committing it would install
+# three controllers this kit never decided to run. `flux install --export`
+# emits the four default controllers and nothing else, which is what belongs
+# here. Verified against the v2.9.3 asset on 2026-08-03.
+#
+# WHY THE MANIFEST IS COMMITTED AT ALL
+#
+# A fork applies these manifests; it never runs `flux bootstrap`. That means
+# no personal access token, no admin-scoped credential, and nothing written
+# back into the fork's repository on its behalf. The controller version is a
+# line in the fork's own diff, and an upgrade is a reviewable pull request
+# rather than a side effect of whichever CLI version somebody happened to run.
+#
+# The cost is an obligation: this file goes stale unless somebody regenerates
+# it. That is mechanical, so it belongs in continuous integration rather than
+# in a person's memory — a scheduled comparison against the current upstream
+# release that opens a pull request.
+#
+# ---------------------------------------------------------------------------
+# The sentinel below exists so that applying this directory in its current
+# state FAILS, and fails with the fix in the error message. An empty or
+# comment-only file would build to nothing: `kubectl apply -k` would report
+# success, the lockdown patches would match no Deployment and be silently
+# discarded, and the cluster would have no Flux at all while every command
+# involved exited zero. Verified locally: kustomize neither errors on an empty
+# resource file nor on a patch whose target matches nothing.
+#
+# Delete the sentinel by regenerating the file. Do not delete it by hand.
+# ---------------------------------------------------------------------------
+apiVersion: placeholder.invalid/v1
+kind: FluxComponentsHaveNotBeenGenerated
+metadata:
+  name: run-scripts-generate-flux-components-sh

@@ -1,0 +1,19 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    # This namespace is NOT a tenant. It is deliberately excluded from the tenant
+    # label, because the guardrail checks in ../configs/rules-tenant-guarantees.yaml
+    # would then report the observability stack as a tenant missing its guarantees.
+    #
+    # It is also the reason the observability stack is a security boundary rather
+    # than a workload: it reads from every tenant namespace and holds none of the
+    # per-tenant isolation those namespaces have.
+    app.kubernetes.io/part-of: platform
+    # Pod Security admission. `baseline` rather than `restricted` because the log
+    # shipper is a DaemonSet mounting host paths — see ./victoria-logs.yaml.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

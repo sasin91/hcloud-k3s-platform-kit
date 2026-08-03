@@ -1,0 +1,169 @@
+---
+# In-cluster guardrails: tenant namespaces missing a guarantee.
+#
+# THESE REPORT. THEY DO NOT FAIL ANYTHING, AND THAT IS THE DESIGN.
+#
+#   > Security boundaries fail. Standing configuration reports.
+#
+# A quota, a limit range, a network policy, a disruption budget and a backup
+# job are standing configuration: their absence is a gap for somebody to close,
+# not an act to stop. An absent privilege boundary is a different thing and
+# belongs in the checks that fail a pull request. Conflating the two trains
+# people to ignore both, and a wall of warnings is indistinguishable from no
+# warnings at all — which is why everything here carries `severity: info` and
+# `guardrail: standing-configuration`, and why your alert routing should send
+# these somewhere that is read weekly rather than somewhere that wakes people.
+#
+# WHY THIS EXISTS AT ALL, given that the tenant template generates all five.
+#
+# Generation is prospective. It covers every tenant created after it learned
+# to, and it never goes back. The tenant provisioned before a guarantee existed
+# stays uncovered forever, and no improvement to the template will ever find
+# it. Only a check does. Measured on a mature multi-tenant cluster: the one
+# guarantee the provisioning path generated was present in 12 of 13 namespaces,
+# and the missing one was the oldest tenant, created before the automation. The
+# four guarantees that were documented rather than generated were present in
+# none.
+#
+#   > EXPECT THE FIRST RUN TO FIND SOMETHING. A check that finds nothing on a
+#   > mature cluster is more likely broken than clean.
+#
+# THE LABELS BELOW MUST MATCH THE TENANT TEMPLATE.
+#
+# `label_platform_local_tenant` is kube-state-metrics' rendering of the
+# namespace label `platform.example.com/managed`, and it only exists because that
+# label is allow-listed in ../controllers/victoria-metrics-k8s-stack.yaml.
+# Three things have to agree: the label the template applies, the allowlist,
+# and these expressions. If they disagree, every alert here evaluates over an
+# empty set and reports perfect compliance forever.
+#
+# TenantGuardrailMatchesNothing at the bottom of this file exists precisely to
+# catch that, because a silently-empty check is the failure mode this whole
+# file is written against.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: tenant-guarantees
+  namespace: observability
+  labels:
+    guardrail: standing-configuration
+spec:
+  groups:
+    - name: tenant-guarantees
+      # Slow on purpose. These are conditions that persist for days; evaluating
+      # them every 30 seconds buys nothing and costs a query per namespace.
+      interval: 5m
+      rules:
+        - alert: TenantMissingResourceQuota
+          expr: |-
+            count by (namespace) (kube_namespace_labels{label_platform_local_tenant="true"})
+              unless
+            count by (namespace) (kube_resourcequota_created)
+          for: 1h
+          labels:
+            severity: info
+            guardrail: standing-configuration
+          annotations:
+            summary: "Tenant namespace {{ $labels.namespace }} has no ResourceQuota"
+            description: >-
+              This namespace is labelled as a tenant but has no quota, so its
+              aggregate requests, limits, volume claims and object counts are
+              unbounded. It was most likely created before the tenant template
+              generated one. Generate it; nothing here will do it for you.
+
+        - alert: TenantMissingLimitRange
+          expr: |-
+            count by (namespace) (kube_namespace_labels{label_platform_local_tenant="true"})
+              unless
+            count by (namespace) (kube_limitrange_created)
+          for: 1h
+          labels:
+            severity: info
+            guardrail: standing-configuration
+          annotations:
+            summary: "Tenant namespace {{ $labels.namespace }} has no LimitRange"
+            description: >-
+              Without a limit range, a pod that specifies neither requests nor
+              limits runs unbounded — which means "we set quotas" is
+              aspirational rather than true. The quota constrains the total; the
+              limit range is what makes an unspecified pod count towards it.
+
+        - alert: TenantMissingNetworkPolicy
+          expr: |-
+            count by (namespace) (kube_namespace_labels{label_platform_local_tenant="true"})
+              unless
+            count by (namespace) (kube_networkpolicy_created)
+          for: 1h
+          labels:
+            severity: info
+            guardrail: standing-configuration
+          annotations:
+            summary: "Tenant namespace {{ $labels.namespace }} has no NetworkPolicy"
+            description: >-
+              The network plugin enforces policy; it does not author it. With no
+              policy in this namespace, every other tenant can reach its
+              database over the pod network, and the cluster looks completely
+              healthy doing it. The gap is authorship, not capability, so
+              changing the network plugin would not fix it.
+
+        - alert: TenantMissingPodDisruptionBudget
+          expr: |-
+            count by (namespace) (kube_namespace_labels{label_platform_local_tenant="true"})
+              unless
+            count by (namespace) (kube_poddisruptionbudget_created)
+          for: 1h
+          labels:
+            severity: info
+            guardrail: standing-configuration
+          annotations:
+            summary: "Tenant namespace {{ $labels.namespace }} has no PodDisruptionBudget"
+            description: >-
+              Nodes in this cluster drain for unattended OS updates. An
+              unprotected workload is evicted with no availability guarantee at
+              a moment nobody chose, and the first anyone hears of it is a
+              customer.
+
+        - alert: TenantMissingBackupJob
+          expr: |-
+            count by (namespace) (kube_namespace_labels{label_platform_local_tenant="true"})
+              unless
+            count by (namespace) (kube_cronjob_labels{label_platform_local_guarantee="backup"})
+          for: 1h
+          labels:
+            severity: info
+            guardrail: standing-configuration
+          annotations:
+            summary: "Tenant namespace {{ $labels.namespace }} has no backup CronJob"
+            description: >-
+              No backup job carrying the guarantee label exists in this
+              namespace. Note what this does and does not say: it says a job is
+              scheduled, not that the job captures anything. Every backup tool
+              surveyed has a path where a run reports success having captured
+              nothing, so the assertion that the output is non-empty belongs
+              inside the job itself — this alert cannot substitute for it.
+
+        # --------------------------------------------------------------
+        # The check on the checks.
+        # --------------------------------------------------------------
+        - alert: TenantGuardrailMatchesNothing
+          # No namespace anywhere carries the tenant label as this stack sees
+          # it. On a cluster with tenants that means one of three things, all of
+          # which produce identical silence from every alert above: the tenant
+          # template applies a different label, the label is not in
+          # kube-state-metrics' allowlist, or kube-state-metrics is not being
+          # scraped.
+          expr: absent(kube_namespace_labels{label_platform_local_tenant="true"})
+          for: 2h
+          labels:
+            severity: info
+            guardrail: standing-configuration
+          annotations:
+            summary: "The tenant guardrails match no namespaces at all"
+            description: >-
+              Every tenant-guarantee check in this rule group is evaluating over
+              an empty set and reporting perfect compliance. Verify that the
+              label the tenant template applies, the kube-state-metrics
+              metricLabelsAllowlist and these expressions all say the same
+              thing. A check that finds nothing is more likely broken than
+              clean, and this alert is the only thing standing between that and
+              a green dashboard.

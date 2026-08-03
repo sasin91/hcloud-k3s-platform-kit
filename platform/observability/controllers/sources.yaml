@@ -1,0 +1,41 @@
+---
+# Chart repositories for this layer.
+#
+# These live in the `observability` namespace rather than `flux-system` on
+# purpose: the delivery layer runs with `--no-cross-namespace-refs=true`, so a
+# HelmRelease can only reference a source in its own namespace. Putting the
+# sources here keeps the layer self-contained and keeps that lockdown flag
+# meaningful instead of forcing an exception to it.
+#
+# Every HelmRelease below pins an exact chart version. The interval on these
+# repositories controls only how often the index is refreshed; it never moves a
+# release, because no release references a range.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: victoriametrics
+  namespace: observability
+spec:
+  url: https://victoriametrics.github.io/helm-charts/
+  interval: 12h
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  # grafana-community, not grafana. The single-binary Tempo chart in
+  # grafana/helm-charts was deprecated and migrated here in January 2026; the
+  # old one still resolves and still installs, which is why it needs saying.
+  name: grafana-community
+  namespace: observability
+spec:
+  url: https://grafana-community.github.io/helm-charts
+  interval: 12h
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: observability
+spec:
+  url: https://prometheus-community.github.io/helm-charts
+  interval: 12h

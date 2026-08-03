@@ -1,0 +1,13 @@
+# Everything the tenant deploys goes here.
+#
+# This is the only path reconciled under the tenant's own service account, and
+# the only path a tenant needs write access to. It ships empty: the kit has no
+# example tenant, because a workload occupying a namespace demonstrates nothing
+# the guarantees in the directory above do not already state.
+#
+# Empty is also a valid steady state. A tenant with a namespace, a quota, a
+# network policy and a backup, and nothing running yet, is a correctly
+# provisioned tenant.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

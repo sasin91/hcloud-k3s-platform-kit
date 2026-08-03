@@ -1,0 +1,62 @@
+# Group A -- repository facts. No cluster, no credentials, no kubeconfig.
+#
+# Everything this workflow checks is decidable from the repository alone, which
+# is why it can run on a pull request from a fork: there is nothing here worth
+# stealing and nothing here that can touch a cluster.
+#
+# Prose can be skipped. A red build cannot.
+name: guardrails
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only. A check that can write to the repository is a check that can be
+# used to write to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: guardrails-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repo-facts:
+    name: repository facts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      # Pinned by exact version, for the same reason every other reference in
+      # this repository is: an unpinned tool is a latent breaking change, and a
+      # guardrail that changes underneath you is worse than none.
+      # A fork wanting more assurance can add checksum verification here.
+      - name: Install kustomize and kubeconform
+        env:
+          KUSTOMIZE_VERSION: v5.4.3
+          KUBECONFORM_VERSION: v0.6.7
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          curl -fsSL -o "$tmp/kustomize.tar.gz" \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf "$tmp/kustomize.tar.gz" -C "$tmp"
+          curl -fsSL -o "$tmp/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf "$tmp/kubeconform.tar.gz" -C "$tmp"
+          install -m 0755 "$tmp/kustomize" /usr/local/bin/kustomize
+          install -m 0755 "$tmp/kubeconform" /usr/local/bin/kubeconform
+          kustomize version
+          kubeconform -v
+
+      # Findings are printed with their severity and also emitted as
+      # annotations, so a boundary failure lands on the diff rather than in a
+      # log nobody opens.
+      #
+      # Add --strict to fail on standing-configuration reports as well. The kit
+      # does not, deliberately: a wall of warnings that fails the build is
+      # indistinguishable from no warnings at all.
+      - name: Run the guardrails
+        run: sh scripts/checks/run-all.sh

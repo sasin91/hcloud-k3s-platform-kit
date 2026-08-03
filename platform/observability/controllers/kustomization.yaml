@@ -1,0 +1,23 @@
+---
+# Stage one of this layer: the namespace, the chart sources, and the releases.
+#
+# Split from ../configs on purpose. Everything in this directory installs
+# custom resource definitions; everything in ../configs consumes them. A
+# resource whose definition has not been established yet fails, retries, and
+# eventually succeeds — which reads as flakiness rather than as a missing
+# dependency edge, and is how ordering bugs survive for years.
+#
+# The cluster reconciliation for ../configs must therefore declare dependsOn
+# this one. See ../README.md.
+#
+# ../secrets is NOT listed here. The Grafana admin credential is created once,
+# by hand, encrypted to the cluster's age key.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - sources.yaml
+  - victoria-metrics-k8s-stack.yaml
+  - victoria-logs.yaml
+  - tempo.yaml
+  - blackbox-exporter.yaml

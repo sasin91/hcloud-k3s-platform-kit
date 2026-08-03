@@ -1,0 +1,114 @@
+---
+# cert-manager — the only thing in this cluster that obtains a certificate.
+#
+# THE DECISION. The ingress controller runs no ACME client. An ingress
+# controller's built-in ACME resolver keeps certificate state in a local file,
+# so two replicas race: both notice a certificate is missing, both order it,
+# and the account's issuance limits pay for it. The universal workaround is to
+# pin the ingress to a single replica — which makes the most traffic-critical
+# component in the cluster a single point of failure in exchange for a problem
+# cert-manager does not have. cert-manager issues into a Secret; any number of
+# ingress replicas read the same Secret. The constraint disappears instead of
+# being managed. See platform/controllers/releases/ingress.yaml for the other
+# half of this, and platform/configs/cluster-issuers.yaml for the issuers.
+#
+# The cost is honest and worth stating: one more controller, and a second place
+# certificates can go wrong.
+#
+# WHY this object lives in flux-system and not in cert-manager. helm-controller
+# runs with `--no-cross-namespace-refs=true`, so a HelmRelease can only name a
+# chart source in its own namespace. The sources are in flux-system, therefore
+# so is every HelmRelease, and the release is placed with targetNamespace. This
+# is a consequence of the multi-tenancy lockdown, not a preference.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  interval: 12h
+  releaseName: cert-manager
+  targetNamespace: cert-manager
+  # Helm's release state goes in the namespace the release manages, not in
+  # flux-system. Otherwise flux-system slowly becomes the place where every
+  # component's history is kept and nobody can move one out.
+  storageNamespace: cert-manager
+  chart:
+    spec:
+      chart: cert-manager
+      # v1.21.1 — latest non-prerelease release, from the GitHub releases API of
+      # cert-manager/cert-manager on 2026-08-03, cross-checked against the tag
+      # list of oci://quay.io/jetstack/charts/cert-manager. Note the OCI tag has
+      # no `v` prefix; the HTTP index publishes the same chart as `v1.21.1`.
+      version: 1.21.1
+      sourceRef:
+        kind: HelmRepository
+        name: cert-manager
+        namespace: flux-system
+      interval: 24h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  # Correct the cluster back to the committed values when something edits the
+  # release out from under it. Applying once proves correspondence between code
+  # and cluster at exactly one instant; everything after that is assumption.
+  driftDetection:
+    mode: enabled
+  values:
+    crds:
+      # Installed with the chart, so the definitions and the controller are
+      # upgraded together and cannot drift apart by a version.
+      enabled: true
+      # Kept when the release is uninstalled. WARNING worth understanding
+      # rather than obeying: deleting these definitions garbage-collects every
+      # Certificate, Issuer and Order in the cluster. With a pruning reconciler
+      # in front, `keep` is what stands between a mistaken path change and
+      # every certificate in the cluster disappearing at once.
+      keep: true
+
+    # More than one replica of the controller, and a budget so a node drain
+    # cannot take the last one. The cluster applies unattended operating-system
+    # updates and drains nodes to do it; a workload with no disruption budget is
+    # evicted with no guarantee at all. cert-manager elects a leader, so the
+    # second replica is availability, not throughput.
+    replicaCount: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+
+    webhook:
+      # The webhook is in the admission path for every Certificate and Issuer
+      # write. If it is unavailable those writes fail, so it gets the same
+      # treatment as the controller.
+      replicaCount: 2
+      podDisruptionBudget:
+        enabled: true
+        minAvailable: 1
+
+    cainjector:
+      replicaCount: 2
+      podDisruptionBudget:
+        enabled: true
+        minAvailable: 1
+
+    config:
+      apiVersion: controller.config.cert-manager.io/v1alpha1
+      kind: ControllerConfiguration
+      # Required for the HTTP-01 solver to answer challenges through an
+      # HTTPRoute, and for the shim that turns an annotation on the platform
+      # Gateway into a Certificate. Routing here is Gateway API, so without
+      # this cert-manager can see no route to solve a challenge on.
+      gatewayAPI:
+        enabled: true
+
+    prometheus:
+      # Metrics are exposed. No ServiceMonitor is created: that object's
+      # definition belongs to the observability stack, and creating a
+      # dependency from the certificate layer to the monitoring layer would
+      # mean certificates stop being issued when monitoring is uninstalled.
+      enabled: true
+      servicemonitor:
+        enabled: false

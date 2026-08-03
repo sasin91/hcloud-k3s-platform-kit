@@ -1,0 +1,71 @@
+---
+# Scrape definitions written as native VictoriaMetrics objects.
+#
+# Each of these charts ships a Prometheus-operator ServiceMonitor or PodMonitor
+# and each has it disabled, because the operator's Prometheus converter is off
+# (see ../controllers/victoria-metrics-k8s-stack.yaml). The converter rewrites a
+# VM object from a same-named Prometheus one, which means a hand-written scrape
+# or rule can be applied successfully and then silently replaced by something
+# derived from a resource somebody else created. Owning the objects directly
+# costs a few lines and removes that whole class of surprise.
+#
+# A component with no scrape here is a component nobody is watching. That
+# includes the components doing the watching.
+
+# Tempo's own metrics. Without this, the trace store's ingestion rate,
+# compaction backlog and block flush failures are invisible — and a trace store
+# that has stopped accepting spans looks exactly like a quiet week.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: tempo
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+      app.kubernetes.io/instance: tempo
+  endpoints:
+    - port: tempo-prom-metrics
+      path: /metrics
+      interval: 30s
+---
+# blackbox-exporter's own health, as distinct from the results of its probes.
+# The probe results say whether the targets are up; this says whether the thing
+# asking is up. Conflating them is how an outage gets reported as "all probes
+# succeeded" — because nothing ran.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: blackbox-exporter
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-blackbox-exporter
+      app.kubernetes.io/instance: blackbox-exporter
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 60s
+---
+# Vector's internal metrics, scraped from the pods directly.
+#
+# The DaemonSet has no Service in front of it (a load-balanced Service across
+# log shippers would hide exactly the thing worth knowing: WHICH node's shipper
+# is failing). VMPodScrape targets the pods, so every node's shipper reports
+# separately and a single bad node is visible as a single bad node.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: vector
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector
+      app.kubernetes.io/instance: victoria-logs-single
+  podMetricsEndpoints:
+    - port: prom-exporter
+      path: /metrics
+      interval: 30s

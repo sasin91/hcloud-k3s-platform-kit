@@ -1,0 +1,30 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Custom resource definitions that are committed rather than fetched.
+#
+# upgrade.cattle.io_plans.yaml is byte-identical to the `crd.yaml` asset of
+# system-upgrade-controller v0.20.1:
+#
+#   https://github.com/rancher/system-upgrade-controller/releases/download/v0.20.1/crd.yaml
+#
+# Downloaded 2026-08-03. Kept unmodified on purpose: a staleness check against
+# upstream is then a diff, not a parse, and any local edit shows up as one.
+#
+# WHY committed rather than pulled from the upstream repository at the tag, the
+# way the Gateway API definitions are: at tag v0.20.1 the manifests checked into
+# that repository still name image v0.14.0. The release artifact is the only
+# form of these manifests whose version is internally consistent, and a release
+# artifact is not a git path. That mismatch is the reason, and it is exactly the
+# class of thing worth writing down — the repository looks like the source of
+# truth and is not.
+#
+# WHY installed at all, given the controller can install it: the controller
+# embeds this definition and has the RBAC to create it at start-up. Relying on
+# that makes "can a Plan be applied?" depend on whether a Deployment happened to
+# have finished starting. That is an ordering dependency expressed as a race.
+# Installed here, the definition exists before the controller does, and the
+# Plans in platform/configs/ apply against something that is already there.
+resources:
+  - upgrade.cattle.io_plans.yaml

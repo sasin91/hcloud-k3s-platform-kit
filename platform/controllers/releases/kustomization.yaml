@@ -1,0 +1,24 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The controllers themselves. Everything here runs after the custom resource
+# definitions exist — see ../stages.yaml for the edge that guarantees it.
+#
+# system-upgrade-controller.yaml is byte-identical to the release asset of
+# system-upgrade-controller v0.20.1:
+#
+#   https://github.com/rancher/system-upgrade-controller/releases/download/v0.20.1/system-upgrade-controller.yaml
+#
+# Downloaded 2026-08-03, unmodified. It creates its own `system-upgrade`
+# namespace, labelled `pod-security.kubernetes.io/enforce: privileged` by
+# upstream — upgrade jobs run privileged on the host by nature, which is why
+# this component gets a namespace of its own rather than sharing one.
+# The image it names is pinned (`rancher/system-upgrade-controller:v0.20.1`),
+# as is the kubectl image its jobs use.
+resources:
+  - namespaces.yaml
+  - cert-manager.yaml
+  - ingress.yaml
+  - metrics-server.yaml
+  - system-upgrade-controller.yaml
