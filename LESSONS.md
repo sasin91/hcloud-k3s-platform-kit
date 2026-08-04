@@ -346,6 +346,25 @@ cleanup it guarded is moot once the controller is gone.
 > Order of teardown is part of the contract. Anything that installs a controller
 > alongside its custom resources owns the reverse order too.
 
+### Force-deleting the release object to escape a wedged release makes it worse
+
+The tempting escape from a release stuck mid-uninstall is to delete the
+declarative object and let the reconciler recreate it. Doing so interrupts the
+uninstall the tool was already attempting, and the storage record is left saying
+`uninstalling` — a state from which the tool will neither install nor remove,
+because it believes a removal is in progress that nothing is progressing.
+
+The resources themselves may be perfectly healthy the whole time. Observed: every
+pod of the release Running and ready, while the release it belongs to could not
+be reconciled at all.
+
+The recoverable order is: delete the *storage record* first, confirm the tool now
+reports the release absent, and only then let the reconciler install. Deleting the
+declarative object is the step that removes your ability to do that cleanly.
+
+> A reconciler's escape hatches are ordered. Reaching for the most forceful one
+> first usually destroys the state the gentler ones needed.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine
