@@ -53,15 +53,10 @@ spec:
     # cluster moves when someone decides it should — which is the difference
     # between delivery and drift for a tenant that cares.
     branch: verify
-  secretRef:
-    # Read-only deploy key, SOPS-encrypted, one per tenant namespace because
-    # cross-namespace references are disabled. See
-    # deploy-key-secret.example.yaml.
-    #
-    # Remove this block entirely if the repository is public — a credential
-    # that grants nothing not already public is a credential to rotate for no
-    # benefit.
-    name: flux-deploy-key
+  # No secretRef. This repository is public, so Flux needs no credential at
+  # all -- the template's block was removed per its own instruction. A
+  # credential granting nothing that is not already public is a credential to
+  # rotate for no benefit.
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
