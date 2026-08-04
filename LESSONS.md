@@ -306,7 +306,8 @@ README line was written telling you to disable the conversion before fetching,
 and the person who wrote that line hit it again twelve hours later by running
 `init -upgrade` in a shell where the guard was not exported. The second time it
 surfaced differently: not a policy failing to compile at boot, but every
-`remote-exec` script arriving with `set -e` and the shell answering
+`remote-exec` script arriving with `set -e
+` and the shell answering
 `set: -: invalid option`. Same cause, unrecognisable symptom.
 
 There is a detail that makes it durable. The conversion is enabled in the
@@ -423,6 +424,48 @@ the smallest possible one.
 
 > If you are checking a status, do not put anything between you and it. Set
 > `pipefail`, or redirect and check separately.
+
+### A quota is a limit on what you can build, not on what you can declare
+
+Configuration that names more resources than the account may hold validates,
+plans, and applies -- partially. The run creates what fits, fails on the one
+that does not, and leaves a half-built cluster whose failure names a single
+resource rather than the ceiling.
+
+Observed twice on the same project, on different resources. First a primary-IP
+limit capped a control plane below the size the module requires, so the module
+refused a shape that was legal in configuration and impossible in the account.
+Later a server limit of four met a default shape of five, and the apply died on
+the fifth having built four.
+
+There is no API for these limits, so no check can read them. That makes it the
+one day-zero item that cannot be automated and must be looked up by a person --
+which is exactly the kind of step that gets skipped.
+
+> Availability answers "can this type be created here". Quota answers "may YOU
+> create it". A configuration validated against the first still fails on the
+> second, and neither is visible in the plan.
+
+### Shrinking a quorum-based control plane with IaC destroys the cluster
+
+Infrastructure-as-code manages servers. It does not manage etcd membership.
+Reducing a three-node control plane to one is, to the tool, three server
+resources becoming one -- a diff it applies without comment. To etcd it is the
+loss of two of three voters, and the survivor can never again reach a majority.
+The API server does not come back.
+
+What the tool reports is a provisioner timeout on a post-install step, exit
+status 124. Nothing in that message says quorum, etcd, or control plane. The
+cluster is unrecoverable by the time you read it, and re-running `apply` cannot
+fix it because there is no working API server for the post-install step to talk
+to.
+
+Growing is safe and shrinking is not, which makes this asymmetric in a way plans
+do not show: both directions render as a count changing.
+
+> A replica count that a consensus protocol depends on is not a number in your
+> configuration -- it is cluster state that happens to be spelled the same way.
+> Removing members is an operation with a protocol, not a diff.
 
 ## Two that are about people
 

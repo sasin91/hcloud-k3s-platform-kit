@@ -67,6 +67,25 @@ Three-node HA control plane · etcd snapshots to object storage · a `Retain` St
 #    within a day of being recorded as available, and the apply failed halfway.
 python scripts/checks/check-pool-availability.py
 
+# 0b. CHECK YOUR PROJECT'S RESOURCE LIMITS in the provider console. There is
+#     no API for these, so no check can do it for you.
+#
+#     This kit's DEFAULT SHAPE IS FIVE SERVERS -- three control planes and two
+#     agents -- before the autoscaler adds a single node. A fresh project on
+#     this provider can be capped lower: the verification project for this
+#     repository was limited to four, so applying the defaults failed with
+#     `server limit reached (resource_limit_exceeded)` after creating four of
+#     them. Primary IPs are quota'd separately and independently.
+#
+#     Budget the ceiling as: 3 control planes + agent_count + autoscaler_max_nodes.
+#
+#     AND GET THE CONTROL PLANE COUNT RIGHT THE FIRST TIME. Growing it later is
+#     safe. SHRINKING IT DESTROYS THE CLUSTER: OpenTofu removes the servers, etcd
+#     membership is not something it manages, and a three-member cluster that
+#     loses two members can never reach quorum again. The API server does not
+#     come back, and what you are shown is a provisioner timeout that mentions
+#     none of this. Verified the hard way on this repository's own cluster.
+
 # 1. Generate an object-storage credential in the provider console.
 #    This step cannot be automated — the provider CLI has no object-storage commands.
 
