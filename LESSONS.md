@@ -467,6 +467,29 @@ do not show: both directions render as a count changing.
 > configuration -- it is cluster state that happens to be spelled the same way.
 > Removing members is an operation with a protocol, not a diff.
 
+### The admission level that permits host access is not the one that sounds like it
+
+`baseline` reads as "the permissive one" next to `restricted`. It is not
+permissive about the things a monitoring stack actually needs: it forbids
+hostPath, hostNetwork, hostPID and hostIPC outright. Only `privileged` allows
+them.
+
+Observed in this repository, in a namespace whose own comment said it was set to
+`baseline` *because* it runs DaemonSets that mount host paths. The reasoning was
+correct and the level denied exactly what the reasoning required.
+
+The failure is invisible from every direction you would naturally look. The
+DaemonSet reports 3 desired and 0 created -- not pending, not failing, simply
+never created, because admission refused each pod before it existed. The Helm
+release sits in its install action until it times out. The layer never reports
+healthy, so every layer chained behind it never applies. The visible symptom is
+"tenants are not deploying", and nothing anywhere in that chain contains the
+word PodSecurity. It is in the DaemonSet's events, and only there.
+
+> A control whose levels are named by strictness invites you to reason about the
+> ordering instead of the contents. Check what the level PERMITS, against the
+> thing you are about to run under it.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine

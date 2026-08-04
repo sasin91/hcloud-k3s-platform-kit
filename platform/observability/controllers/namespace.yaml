@@ -12,8 +12,32 @@ metadata:
     # than a workload: it reads from every tenant namespace and holds none of the
     # per-tenant isolation those namespaces have.
     app.kubernetes.io/part-of: platform
-    # Pod Security admission. `baseline` rather than `restricted` because the log
-    # shipper is a DaemonSet mounting host paths — see ./victoria-logs.yaml.
-    pod-security.kubernetes.io/enforce: baseline
+    # Pod Security admission.
+    #
+    # THIS SAID `baseline` AND WAS WRONG. The reasoning attached to it was
+    # correct — this namespace runs DaemonSets that mount host paths, the log
+    # shipper and the node metrics exporter — but `baseline` does not permit
+    # hostPath. It forbids it, along with hostNetwork, hostPID and hostIPC.
+    # Only `privileged` allows them.
+    #
+    # The consequence was total and silent from the outside: the node exporter
+    # DaemonSet reported 3 desired and 0 created, forever, because admission
+    # refused every pod. The Helm release stayed in its install action until it
+    # timed out, so the observability layer never reported Ready, and every
+    # layer chained behind it never applied. Nothing in that chain says
+    # "PodSecurity" — you have to read the DaemonSet's events to find it.
+    #
+    # This is the repository's own lesson happening to the repository: a comment
+    # asserting a security posture is not evidence of that posture. The comment
+    # explained why host access was needed and then set a level that denies it.
+    #
+    # WHAT THIS COSTS. `privileged` here means the platform's own collectors are
+    # not constrained by admission. That is the price of node-level metrics and
+    # logs, and it is bounded: this namespace holds no tenant workloads, and
+    # tenant namespaces are generated at `restricted` — which is the boundary
+    # that actually matters. audit and warn stay at `restricted` so anything
+    # unnecessarily privileged still shows up in the audit log rather than
+    # becoming invisible.
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
