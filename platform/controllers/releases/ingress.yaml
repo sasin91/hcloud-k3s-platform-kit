@@ -196,8 +196,18 @@ spec:
         # "available" are different things in this provider's API, and a
         # location or type that is merely supported applies cleanly and then
         # fails when the balancer is created.
-        load-balancer.hetzner.cloud/location: "CHANGE-ME-location"
-        load-balancer.hetzner.cloud/type: "CHANGE-ME-lb-type"
+        # A REAL DEFAULT, NOT A PLACEHOLDER. A "CHANGE-ME" here does not fail
+        # loudly -- the release installs, reports success, and the cloud
+        # controller then rejects the value with "location or network zone not
+        # found" in a Service event nobody reads. The result is an ingress with
+        # no address, on a cluster that looks healthy. Verified on a live
+        # cluster, where it retried silently for fifty minutes.
+        #
+        # MUST MATCH the location your nodes are in -- see the node layer's
+        # control_plane_location. A load balancer in another location cannot
+        # reach them over the private network.
+        load-balancer.hetzner.cloud/location: "fsn1"
+        load-balancer.hetzner.cloud/type: "lb11"
         # Reach the nodes over the private network rather than their public
         # addresses. Keeps the hop off the internet and out of the firewall.
         load-balancer.hetzner.cloud/use-private-ip: "true"

@@ -60,3 +60,41 @@ spec:
     provider: sops
     secretRef:
       name: sops-age
+
+---
+# The configs stage, separated from the controllers stage above by a real
+# dependency edge.
+#
+# WHY THIS IS TWO KUSTOMIZATIONS AND NOT ONE. The controllers stage installs the
+# custom resource definitions; this stage creates resources that use them. A
+# single Kustomization over the parent directory applies both in one pass, and
+# the resources lose:
+#
+#   VMPodScrape/observability/vector dry-run failed:
+#     no matches for kind "VMPodScrape"
+#
+# Verified on a live cluster. Ordering is a correctness property, not a
+# convenience -- and a directory with no kustomization.yaml is scanned
+# recursively, which is how both stages ended up in one pass to begin with.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: observability-configs
+  namespace: flux-system
+spec:
+  interval: 30m
+  timeout: 10m
+  retryInterval: 2m
+  prune: true
+  wait: true
+  dependsOn:
+    - name: observability-controllers
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./platform/observability/configs
+  serviceAccountName: kustomize-controller
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age

@@ -21,7 +21,7 @@ spec:
   # retries and eventually succeeds — which reads as a flaky first install
   # rather than as the missing edge it is.
   dependsOn:
-    - name: observability
+    - name: observability-configs
 
   # ---------------------------------------------------------------------------
   # PLATFORM-ADMIN-OWNED, AND THIS IS THE ONE PLACE THAT DISTINCTION IS EASY TO
