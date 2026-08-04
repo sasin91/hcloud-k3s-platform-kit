@@ -31,7 +31,7 @@ creation_rules:
     # namespace, and shows nothing of what it changed to.
     encrypted_regex: ^(data|stringData)$
     age: >-
-      age1PLACEHOLDERREPLACEWITHYOUROWNAGEPUBLICKEYFROMAGEKEYGENXXXX
+      age1wfcxygzm7t0en0cyzt8ngzkwjd3rw9duslvtpra0wuvkdwrc5clqptc9p8
 
   # ---------------------------------------------------------------------------
   # Catch-all, deliberately last: any other file following the convention is
@@ -42,7 +42,7 @@ creation_rules:
   - path_regex: \.sops\.ya?ml$
     encrypted_regex: ^(data|stringData)$
     age: >-
-      age1PLACEHOLDERREPLACEWITHYOUROWNAGEPUBLICKEYFROMAGEKEYGENXXXX
+      age1wfcxygzm7t0en0cyzt8ngzkwjd3rw9duslvtpra0wuvkdwrc5clqptc9p8
 
 # =============================================================================
 # THE KEY ABOVE IS A PLACEHOLDER. IT IS NOT A VALID age RECIPIENT.

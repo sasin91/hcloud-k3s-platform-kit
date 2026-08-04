@@ -22,3 +22,8 @@ resources:
   - otel-collector.yaml
   - tempo.yaml
   - blackbox-exporter.yaml
+  # Added by this fork, per ../secrets/grafana-admin.sops.yaml.example step 4.
+  # The kit cannot ship this line: it names a file that does not exist until a
+  # fork creates it, and a kustomization referencing a missing file fails to
+  # build -- which would stop the entire layer rather than just Grafana.
+  - ../secrets/grafana-admin.sops.yaml
