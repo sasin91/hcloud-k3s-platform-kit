@@ -113,6 +113,24 @@ Log lines by namespace, last hour: `kube-system` 4,904 · `tenant-sasin91` 1,066
 The tenant serving a handful of requests produced 1,066 log lines an hour —
 second only to the Kubernetes control plane.
 
+## Grafana, as provisioned
+
+| | |
+|---|---|
+| Datasources | 5 — VictoriaMetrics (two flavours), VictoriaLogs, Tempo, Alertmanager |
+| Provisioned dashboards | **42** |
+| Unauthenticated `/api/datasources` | **401** |
+
+All four signals are wired to a datasource without anyone configuring one, and
+42 dashboards exist before you build any. That is the argument for the bundled
+stack and also the argument against it: nobody reads 42 dashboards, and every
+one queries series you are paying to retain.
+
+The 401 matters more than it looks. Anonymous access being off is asserted in
+configuration and checked in CI; this is the runtime confirmation that the
+dashboard sitting in front of every log line and trace on the cluster refuses
+an unauthenticated API call.
+
 ## Build and teardown timings
 
 | Operation | Result |
