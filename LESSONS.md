@@ -526,6 +526,30 @@ The reason all three survived review is that each was individually reasonable,
 and the model only exists in the intersection. **Deploy one real tenant. It is
 the only test that crosses all three.**
 
+### A tunnel that failed to open still answers
+
+`kubectl port-forward` was asked to bind a component's default port. A tunnel to
+a **different cluster** already owned that port. The bind failed, the client
+connected to the tunnel that was already there, and every query returned real,
+plausible, internally consistent data — about somebody else's cluster.
+
+The numbers were wrong by 3× and 17×, and nothing about them looked wrong. They
+were caught only because one query happened to return a list of namespace names,
+and the names belonged to a system that does not exist on the cluster being
+measured.
+
+What made it silent was a habit: the tunnel was launched with `>/dev/null 2>&1`,
+and `bind: address already in use` is written to stderr. The single signal that
+would have caught it immediately was explicitly discarded, by a flag added to
+keep the output tidy.
+
+Default ports are exactly the ports something else is most likely to be using
+for the same component.
+
+> Suppressing error output does not make a command succeed; it makes failure
+> indistinguishable from success. For anything that binds a port, bind somewhere
+> unusual and verify *what answered*, not that something did.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine
