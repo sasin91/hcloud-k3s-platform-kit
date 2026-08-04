@@ -268,3 +268,64 @@ acceptable and non-HA; three is the smallest useful HA count.
 This is worth knowing because 2 is exactly what someone reaches for when a
 quota blocks 3 — and the module stops them. Reduce to 1 and accept non-HA, or
 raise the quota. Do not go to 2.
+
+### On Windows, set `core.autocrlf=false` before `tofu init` — or the cluster silently never starts
+
+This is the single most expensive failure found while verifying this kit, and
+nothing reports it.
+
+OpenTofu downloads the node module **via git**. Git for Windows defaults to
+`core.autocrlf=true`, which rewrites text files to CRLF on checkout. One of the
+module's templates is an SELinux policy source, and it is embedded verbatim into
+cloud-init and compiled **on the node**:
+
+```
+/root/kube_hetzner_selinux.te:1: ERROR 'unrecognized character' at token '0xd' on line 1
+checkmodule: error(s) encountered while parsing configuration
+semodule:  Failed on /root/kube_hetzner_selinux.pp!
+Job for k8s-selinux-policy.service failed
+```
+
+`0xd` is a carriage return.
+
+**What makes this expensive is everything that still succeeds.** Every server is
+created. The provider reports them running. SSH works. `apply` reports only
+opaque `remote-exec provisioner error` lines with `Process exited with status 2`.
+The actual cause is three layers down in a failed systemd unit, and the visible
+consequence is simply that **k3s never starts** — `systemctl is-system-running`
+returns `degraded` and `systemctl is-active k3s` returns `inactive`.
+
+Nothing in the chain mentions line endings.
+
+Fix, without changing your global configuration:
+
+```bash
+printf '[core]
+	autocrlf = false
+	eol = lf
+' > /tmp/gitconfig-lf
+export GIT_CONFIG_GLOBAL=/tmp/gitconfig-lf
+rm -rf .terraform/modules      # the bad copy is already on disk
+tofu init
+```
+
+Verify before applying — the template must not report CRLF:
+
+```bash
+file .terraform/modules/kube_hetzner/templates/*.te
+```
+
+**Fixing it requires destroying the nodes, not re-applying.** The module keeps
+`user_data` in a `lifecycle.ignore_changes` block — deliberately, so that editing
+a template does not silently rebuild a running cluster. The consequence is that
+correcting the line endings and running `apply` again changes *nothing* on
+existing nodes: they keep the cloud-init they were born with. You must
+`tofu destroy` and rebuild, or replace each node individually.
+
+So the cost of getting this wrong is not a re-run. It is every node in the
+cluster.
+
+This is the same class of defect as the `.gitattributes` in this repository,
+which pins `eol=lf` so a checkout platform cannot decide for you. That protects
+*this* repository's files. It does nothing for a dependency git fetches on your
+behalf — and that is where it bit.

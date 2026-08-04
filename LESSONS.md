@@ -264,6 +264,23 @@ Related: for such a workload, a many-core server part can be *worse hardware* th
 
 ---
 
+### A dependency is fetched by a tool with its own opinions
+
+Pinning line endings in your own repository protects your own files. It does
+nothing for source a build tool fetches on your behalf — and that fetch runs
+under whatever configuration the local machine happens to have.
+
+Observed: infrastructure tooling downloads a module over git; git on one platform
+rewrites text files to CRLF by default; one of those files is a policy source
+compiled on the remote host; the compiler rejects the carriage return. Every
+server is created successfully, the provider reports them healthy, remote access
+works, and the orchestrator that was supposed to run on them silently never
+starts. The only visible symptom is an opaque provisioner error two layers above
+the real one.
+
+> The reproducibility of a build is bounded by the least reproducible thing it
+> fetches. Pin what you fetch, and pin **how** you fetch it.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine

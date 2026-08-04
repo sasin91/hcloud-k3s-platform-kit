@@ -60,9 +60,14 @@ packer build -only='hcloud.leapmicro-x86-snapshot' hcloud-leapmicro-snapshots.pk
 # 4. Build the cluster
 tofu init && tofu apply
 
-# 5. Generate the root of trust and install Flux
+# 5. Generate the root of trust and install Flux.
+#    Apply TWICE. The first apply creates the custom resource definitions and
+#    then fails on the resources that use them -- kubectl does not wait for a
+#    definition it created in the same pass to become established. The second
+#    apply succeeds. This is expected, not a fault.
 age-keygen -o age.agekey
-kubectl apply -k clusters/<name>/flux-system
+kubectl apply -k clusters/<name>/flux-system   # creates CRDs, reports 2 errors
+kubectl apply -k clusters/<name>/flux-system   # now succeeds
 kubectl create secret generic sops-age \
   --namespace flux-system --from-file=age.agekey=age.agekey
 
@@ -117,23 +122,26 @@ No kubeconfig is ever placed in a CI system.
 
 ## Status — read this before trusting anything
 
-The infrastructure layer has been **applied against a real provider account**. Everything above it has not.
+Parts of this kit have now been **run on a real cluster**. Where a claim is verified it says so; where it is not, it says that too.
 
-**Verified by running it, 2026-08-04:**
+**Verified on a live cluster, 2026-08-04:**
 
-- The pinned module resolves, providers resolve, and every input validates against the real module.
-- `plan` computes the full graph — 79 resources.
-- `apply` creates real infrastructure: network, subnets, placement groups, firewall, servers, load balancer.
-- `destroy` is clean. Two separate teardowns removed 26 and 22 resources with **zero residue** — no orphaned network, volume, address or snapshot.
-- Object storage supports conditional writes, so native state locking is real; and the Go SDK's default checksum behaviour works, so **no checksum workaround ships**. Measured 2026-08-03, one location.
+- The node layer builds. `apply` completed with 45 resources and no errors; both nodes reached `Ready` on the pinned Kubernetes version.
+- Flux installs from the committed manifests, and all four controllers run.
+- **The multi-tenancy lockdown flags are live on the running controllers**, in the correct per-controller matrix — verified by reading container arguments off the cluster, not by inspecting patch files.
+- **Flux reconciles from a git source and applies what it finds**, under those lockdown flags, using a named service account.
+- **The hostname-authorisation admission policy compiles and enforces.** A route claiming another tenant's hostname is refused; so is a route declaring no hostname at all, which would otherwise inherit a shared listener's and claim everything it serves.
+- `destroy` is clean. Repeated teardowns removed 26, 22 and 39 resources with zero residue.
+- Object storage supports conditional writes, so native state locking is real, and default Go SDK checksums work, so no workaround ships.
 
-**NOT verified, and this is the important half:**
+**Not yet verified:**
 
-- **Node provisioning did not converge.** SSH authentication to freshly created nodes timed out after ten minutes, so k3s never started. The failure is in the node module's own provisioning path, not in this repository's configuration — the firewall was open, the key was registered, and the same image had accepted the same key on an earlier run.
-- Consequently **nothing above the node layer has ever run**: Flux, cert-manager, the Gateway, the tenant template, and the admission policy's CEL expression have never been evaluated by an API server.
-- The **full HA shape was not reachable** in the test project. A project-level primary-IP quota caps it at three dual-stack nodes, and the module correctly refuses a two-node control plane, so the run used one control plane and one agent. Anti-affinity and disruption-budget behaviour therefore remain untested by construction.
+- **cert-manager issuing a real certificate** — needs a domain pointed at the cluster.
+- **The platform and observability layers reconciling from this repository**, which needs it published and a deploy key present. Their manifests build and dry-run cleanly against a live API server, but no controller has installed them.
+- **The tenant template applied for real** — its manifests validate, but no tenant has been created from it.
+- **The full HA shape.** A project-level address quota capped the test at two nodes, and the module correctly refuses a two-node control plane, so anti-affinity and disruption-budget behaviour remain untested by construction.
 
-Prices and instance availability quoted anywhere here are dated observations, not permanent properties. Both move — see `LESSONS.md` for how fast.
+Prices and instance availability quoted anywhere here are dated observations, not permanent properties — see `LESSONS.md` for how fast that turned out to matter.
 
 ---
 
