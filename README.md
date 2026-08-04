@@ -238,11 +238,11 @@ Parts of this kit have now been **run on a real cluster**. Where a claim is veri
 - **Ingress runs HA for real** — two replicas across two nodes with a disruption budget, and the Gateway reports `Programmed`.
 - **Traces reach the trace store with Kubernetes context attached.** A request made from a laptop over the public internet arrives as a span carrying `url.path`, the status code, and the `k8s.pod.name` / `k8s.namespace.name` / `k8s.node.name` of the ingress pod that served it — stamped by the collector, which is the entire reason it sits in the path.
 - Object storage supports conditional writes, so native state locking is real, and default Go SDK checksums work, so no workaround ships.
+- **A tenant generated from the template serves real traffic.** A namespace created from `_template`, its workload reconciled by its own service account under `restricted` pod security, its route attached to the platform Gateway through `allowedRoutes`, and the page fetched over the public internet with a Let's Encrypt certificate the system trust store validates — no `-k`, no override.
 - **Teardown is complete only with `scripts/teardown.sh` run first** — see Teardown above. This is a correction: the earlier claim that `destroy` alone was clean held only for clusters that had never autoscaled, served a `LoadBalancer` Service, or bound a PVC.
 
 **Not yet verified:**
 
-- **A tenant generated from the template and actually running a workload.** The layer reconciles and the template validates, but the resource list ships empty by design, so no namespace has been created from it.
 - **Backups restoring.** The CronJob is generated with every tenant; no restore has been exercised.
 - **Autoscaler scale-out under real pressure.** The verification project's server quota left no headroom to test it.
 - **A control plane surviving the loss of a member.** Three members formed and were healthy; no member was killed to watch the remaining two carry on.
