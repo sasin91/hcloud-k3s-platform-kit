@@ -133,11 +133,12 @@ Parts of this kit have now been **run on a real cluster**. Where a claim is veri
 - **The hostname-authorisation admission policy compiles and enforces.** A route claiming another tenant's hostname is refused; so is a route declaring no hostname at all, which would otherwise inherit a shared listener's and claim everything it serves.
 - `destroy` is clean. Repeated teardowns removed 26, 22 and 39 resources with zero residue.
 - Object storage supports conditional writes, so native state locking is real, and default Go SDK checksums work, so no workaround ships.
+- **The platform and observability layers install from this repository.** Ingress, certificates, metrics, the trace store and the collector were all reconciled onto the cluster by Flux from the committed manifests.
+- **cert-manager issued a real certificate** from Let's Encrypt for a domain pointed at the cluster.
+- **Traces reach the trace store with Kubernetes context attached.** A request made from a laptop over the public internet arrived as a span carrying `url.path`, status code, and the `k8s.pod.name` / `k8s.namespace.name` / `k8s.node.name` of the ingress pod that served it — stamped by the collector, which is the entire reason it sits in the path.
 
 **Not yet verified:**
 
-- **cert-manager issuing a real certificate** — needs a domain pointed at the cluster.
-- **The platform and observability layers reconciling from this repository**, which needs it published and a deploy key present. Their manifests build and dry-run cleanly against a live API server, but no controller has installed them.
 - **The tenant template applied for real** — its manifests validate, but no tenant has been created from it.
 - **The full HA shape.** A project-level address quota capped the test at two nodes, and the module correctly refuses a two-node control plane, so anti-affinity and disruption-budget behaviour remain untested by construction.
 

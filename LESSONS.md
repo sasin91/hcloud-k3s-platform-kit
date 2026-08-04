@@ -304,6 +304,48 @@ the real one.
 > The reproducibility of a build is bounded by the least reproducible thing it
 > fetches. Pin what you fetch, and pin **how** you fetch it.
 
+### A name you did not choose is an input you did not know you had
+
+A delivery tool that installs charts on your behalf has to call the release
+something. When you do not name it, it derives one — commonly from the object's
+name and the namespace it targets. That derived string is then an input to every
+name the chart generates: services, jobs, labels, the lot.
+
+So moving a release between namespaces — a refactor with no functional intent
+whatsoever — renames things that other components address by name. Observed on a
+live cluster, one such move broke three things at once:
+
+- Two Services were renamed. The components exporting to them kept exporting to
+  the old names, which no longer resolved. **Nothing errored.** The exporters
+  reported healthy, the receiver reported healthy, and the data was simply gone.
+- One chart's generated label crossed 63 bytes and became invalid.
+
+The second is worth dwelling on. The over-long string was a *Job pod label*,
+which is capped at 63 bytes, but the same string was also a *ServiceAccount
+name*, which is capped at 253 — so it was simultaneously legal and fatal
+depending on which field it landed in. The release wedged in `uninstalling` and
+could not remediate, because the pre-delete hook it had to run in order to
+uninstall was itself the invalid object. Un-installable and un-removable, from
+one derived name being 39 characters instead of 26.
+
+> Name the things whose names other things depend on. A generated name is not a
+> name — it is a value that happens to be stable until someone moves the object
+> that generates it.
+
+### Deleting a controller strands the objects it was finalising
+
+Custom resources carry finalizers, and the controller that owns them is the only
+thing that clears them. Remove the controller first and every one of its
+resources becomes undeletable: the delete blocks forever, waiting on a reconciler
+that no longer exists. `kubectl delete` does not fail — it hangs, which reads as
+a slow cluster rather than a permanent one.
+
+The escape is to strip the finalizer by hand, which is safe here only because the
+cleanup it guarded is moot once the controller is gone.
+
+> Order of teardown is part of the contract. Anything that installs a controller
+> alongside its custom resources owns the reverse order too.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine
