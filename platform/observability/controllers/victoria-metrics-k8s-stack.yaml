@@ -17,6 +17,14 @@ metadata:
   name: victoria-metrics-k8s-stack
   namespace: observability
 spec:
+  # REQUIRED. The lockdown flag --default-service-account=default means a
+  # HelmRelease naming no account reconciles as the namespace's default
+  # service account, which has no permissions -- helm-controller then cannot
+  # even read the secrets Helm stores release state in, and the release fails
+  # with a message about querying storage rather than about permissions.
+  # Verified on a live cluster: without this, the platform layer cannot
+  # install itself under the kit's own lockdown flags.
+  serviceAccountName: helm-controller
   interval: 1h
   timeout: 20m
   chart:
