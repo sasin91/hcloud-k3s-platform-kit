@@ -365,6 +365,46 @@ declarative object is the step that removes your ability to do that cleanly.
 > A reconciler's escape hatches are ordered. Reaching for the most forceful one
 > first usually destroys the state the gentler ones needed.
 
+### Infrastructure-as-code destroys only what it created
+
+A cluster creates provider resources at runtime. The autoscaler creates servers,
+the cloud controller creates a load balancer for every LoadBalancer Service, and
+the CSI driver creates a volume for every PersistentVolumeClaim. None of them
+appear in the IaC tool's state, because the IaC tool did not create them.
+
+`destroy` walks its state, removes what it finds, and reports success for
+exactly that. The runtime-created resources keep running and keep billing, and
+nothing in the output mentions them.
+
+It is worse than a leak, because the orphans are not inert. An autoscaler-created
+server stays attached to the private network, so destroying the *network* fails
+-- and the run dies partway through with an error about a network, several steps
+from the node that is actually holding it. Observed: a destroy that errored on a
+network it could not delete because of a server it could not see.
+
+The earlier claim in this repository that teardown was clean was true, and
+useless: those runs had no autoscaled node, no LoadBalancer Service and no
+PVCs, so there was nothing outside state to leave behind. **A teardown is only
+proven against a cluster that has actually done something.**
+
+> Ask what creates resources at runtime, not just what creates them at apply
+> time. Then delete those first, in dependency order, and re-list afterwards --
+> a teardown you have not re-listed is not a teardown you have verified.
+
+### A pipe throws away the exit code you were checking
+
+`tofu destroy | tail` reports `tail`'s status, not the destroy's. A run that
+errored out reported success to everything downstream, including the automation
+watching it.
+
+This is elementary and it still cost a wrong conclusion in this repository's own
+verification: the destroy was recorded as exiting 0 while its last four lines
+were an error. Every lesson here is some version of the same shape, and this is
+the smallest possible one.
+
+> If you are checking a status, do not put anything between you and it. Set
+> `pipefail`, or redirect and check separately.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine

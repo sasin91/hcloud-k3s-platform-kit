@@ -130,6 +130,30 @@ No personal access token. No admin-scoped credential. Nothing written back into 
 
 ---
 
+## Teardown
+
+**In this order, or it fails partway and leaves things billing.**
+
+```bash
+scripts/teardown.sh              # list what the CLUSTER created (deletes nothing)
+scripts/teardown.sh --delete     # remove those first
+tofu destroy                     # now this can complete
+scripts/teardown.sh              # re-list: a teardown you have not re-listed is unverified
+```
+
+`tofu destroy` removes what OpenTofu created. It does not remove what the
+*cluster* created while running — autoscaler servers, a load balancer per
+`LoadBalancer` Service, a volume per `PersistentVolumeClaim` — because none of
+those were ever in its state.
+
+They are not inert leftovers. An autoscaler-created server stays attached to the
+private network, so destroying the **network** fails, and the run dies with an
+error naming the network rather than the node holding it. Observed exactly that
+on this kit: a destroy that had already reported removing everything it knew
+about.
+
+---
+
 ## Guardrails
 
 Checks are split by *where the truth lives*, not by severity.
@@ -175,7 +199,7 @@ Parts of this kit have now been **run on a real cluster**. Where a claim is veri
 - **The multi-tenancy lockdown flags are live on the running controllers**, in the correct per-controller matrix — verified by reading container arguments off the cluster, not by inspecting patch files.
 - **Flux reconciles from a git source and applies what it finds**, under those lockdown flags, using a named service account.
 - **The hostname-authorisation admission policy compiles and enforces.** A route claiming another tenant's hostname is refused; so is a route declaring no hostname at all, which would otherwise inherit a shared listener's and claim everything it serves.
-- `destroy` is clean. Repeated teardowns removed 26, 22 and 39 resources with zero residue.
+- `destroy` removes everything **it created** -- repeated teardowns cleared 26, 22 and 39 resources. It does **not** remove what the cluster created at runtime (autoscaler servers, cloud-controller load balancers, CSI volumes), because those were never in its state. Run `scripts/teardown.sh --delete` first; see below.
 - Object storage supports conditional writes, so native state locking is real, and default Go SDK checksums work, so no workaround ships.
 - **The platform and observability layers install from this repository.** Ingress, certificates, metrics, the trace store and the collector were all reconciled onto the cluster by Flux from the committed manifests.
 - **cert-manager issued a real certificate** from Let's Encrypt for a domain pointed at the cluster.
