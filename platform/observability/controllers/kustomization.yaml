@@ -19,5 +19,6 @@ resources:
   - sources.yaml
   - victoria-metrics-k8s-stack.yaml
   - victoria-logs.yaml
+  - otel-collector.yaml
   - tempo.yaml
   - blackbox-exporter.yaml

@@ -209,3 +209,39 @@ spec:
   #     ports:
   #       - protocol: TCP
   #         port: 6443
+---
+# Egress to the telemetry collector, and nowhere else in the cluster.
+#
+# WITHOUT THIS RULE, INSTRUMENTATION SILENTLY DOES NOTHING. Egress is default
+# deny; the collector lives in another namespace on a cluster address inside
+# 10.0.0.0/8, which the outbound-internet rule above explicitly EXCLUDES, on a
+# port that is not 443. So an application instrumented exactly as documented
+# would export into a black hole: no error, no rejection, spans discarded at the
+# network layer, and a trace store that stays empty for a reason nobody would
+# think to look for.
+#
+# This was found by reading the policy before writing the documentation. Had it
+# not been, the instructions would have been wrong for every reader on their
+# first attempt.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-telemetry
+  namespace: REPLACE-tenant
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318

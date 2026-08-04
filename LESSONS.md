@@ -264,6 +264,29 @@ Related: for such a workload, a many-core server part can be *worse hardware* th
 
 ---
 
+### A reconciler that waits for health cannot heal what keeps it unhealthy
+
+A reconciliation that waits for its resources to become ready is the correct
+default — it is the difference between proving a rollout worked and proving the
+API server accepted some YAML. But it creates a deadlock the moment a resource
+becomes *permanently* unhealthy.
+
+Observed: a release could not install because it lacked permission. Its parent
+reconciliation blocked, waiting for health. The fix was committed and the source
+was fetched — and the reconciliation never applied it, because it was still
+waiting on the previous attempt. Its last-applied revision stayed empty while the
+source sat several commits ahead.
+
+> Waiting for health makes a rollout honest. It also means a broken rollout
+> cannot be repaired by committing the repair. Something outside the loop has to
+> break the tie.
+
+Practical consequences: set a timeout that actually expires, and know before you
+need it how to intervene — suspend the reconciliation, patch the live resource,
+or delete it so the next pass recreates it. A GitOps system where the only
+documented remedy is "commit a fix" has no answer for the case where committing
+does nothing.
+
 ### A dependency is fetched by a tool with its own opinions
 
 Pinning line endings in your own repository protects your own files. It does
