@@ -79,8 +79,11 @@ python scripts/checks/check-pool-availability.py
 packer init  hcloud-leapmicro-snapshots.pkr.hcl
 packer build -only='hcloud.leapmicro-x86-snapshot' hcloud-leapmicro-snapshots.pkr.hcl
 
-# 4. Build the cluster
-tofu init && tofu apply
+# 4. Build the cluster. The check between init and apply is not optional on
+#    Windows, and is cheap everywhere else.
+tofu init
+python scripts/checks/check-fetched-module-line-endings.py
+tofu apply
 
 # 5. Point the sync at YOUR fork -- as a COMMIT, before anything is applied.
 #    Edit `url` and `ref.branch` in clusters/<name>/flux-system/gotk-sync.yaml,
