@@ -301,6 +301,25 @@ works, and the orchestrator that was supposed to run on them silently never
 starts. The only visible symptom is an opaque provisioner error two layers above
 the real one.
 
+It recurs, and the recurrence is the point. This was recorded as a lesson, a
+README line was written telling you to disable the conversion before fetching,
+and the person who wrote that line hit it again twelve hours later by running
+`init -upgrade` in a shell where the guard was not exported. The second time it
+surfaced differently: not a policy failing to compile at boot, but every
+`remote-exec` script arriving with `set -e` and the shell answering
+`set: -: invalid option`. Same cause, unrecognisable symptom.
+
+There is a detail that makes it durable. The conversion is enabled in the
+**system** configuration installed by Git for Windows, not in anything the
+operator set. So `git config --global core.autocrlf` prints nothing, which reads
+as "not enabled", and the default silently applies anyway. Checking the setting
+you believe is responsible confirms innocence while the conversion happens.
+
+The fix is therefore not a better README line. It is
+`scripts/checks/check-fetched-module-line-endings.py`, which inspects the fetched
+files themselves, between `init` and `apply`. **Check the artifact, not the
+configuration you think produces it.**
+
 > The reproducibility of a build is bounded by the least reproducible thing it
 > fetches. Pin what you fetch, and pin **how** you fetch it.
 
