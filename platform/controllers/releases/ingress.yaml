@@ -55,7 +55,7 @@ spec:
     mode: enabled
   values:
 
-    # TRACING. Without this the trace store is installed, healthy, and empty —
+    # TRACING. Without this the trace store is installed, healthy, and empty --
     # which is what this kit shipped until a live cluster proved it. Enabling it
     # here means the store is non-empty from the first request that crosses the
     # gateway, before anybody instruments an application.
@@ -63,7 +63,20 @@ spec:
     # Exported to the collector rather than straight to the store, so gateway
     # spans carry the same cluster metadata as application spans and the two can
     # be joined.
+    #
+    # The value shapes below were corrected against this chart's own schema after
+    # a live upgrade rejected the obvious guess: access logs are `accessLog` at
+    # the top level, not nested under `logs`, and the chart sets
+    # `additionalProperties: false` so a wrong key fails the release rather than
+    # being ignored. That is the good failure mode, and it is worth saying so --
+    # a chart that silently accepted an unknown key would have left tracing off
+    # while reporting success.
     tracing:
+      # A STATED SAMPLING POLICY, not a default. 1.0 keeps every trace, which is
+      # affordable on a small cluster and is not on a busy one. Lower it before
+      # traffic makes the decision for you.
+      sampleRate: 1.0
+      addInternals: false
       otlp:
         enabled: true
         grpc:
@@ -71,16 +84,16 @@ spec:
           endpoint: opentelemetry-collector.observability.svc.cluster.local:4317
           insecure: true
 
-    # The access log carries the trace and span identifiers, which is what lets
-    # a log line lead to a request and a request lead back to its logs. Shipping
-    # traces and logs to the same platform is not correlation; this is.
-    logs:
-      access:
-        enabled: true
-        format: json
-        fields:
-          headers:
-            defaultMode: drop
+    # The access log carries trace and span identifiers, which is what lets a log
+    # line lead to a request and a request lead back to its logs. Shipping traces
+    # and logs to the same platform is not correlation; this is.
+    accessLog:
+      enabled: true
+      format: json
+      fields:
+        headers:
+          # Headers carry credentials far more often than anyone intends.
+          defaultMode: drop
     deployment:
       # More than one. Raise this and the anti-affinity constraint together:
       # the anti-affinity below is `required`, so a replica count higher than
