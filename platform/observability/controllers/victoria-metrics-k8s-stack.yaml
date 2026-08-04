@@ -43,7 +43,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: victoriametrics
-        namespace: observability
+        namespace: flux-system
   install:
     remediation:
       retries: 3

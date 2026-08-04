@@ -1,3 +1,15 @@
+# Chart sources live in flux-system, alongside the HelmRelease objects that
+# reference them.
+#
+# THEY MUST. The controllers run with --no-cross-namespace-refs, so a release in
+# one namespace cannot reference a source in another:
+#
+#   cross-namespace references are not allowed:
+#     cannot access HelmChart observability/flux-system-tempo
+#
+# That is the lockdown flag doing its job, not a bug. It also means the release
+# and its source are a pair: move one and you must move the other. Verified on a
+# live cluster, where moving only the releases produced exactly the error above.
 ---
 # Chart repositories for this layer.
 #
@@ -14,7 +26,7 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
   name: victoriametrics
-  namespace: observability
+  namespace: flux-system
 spec:
   url: https://victoriametrics.github.io/helm-charts/
   interval: 12h
@@ -26,7 +38,7 @@ metadata:
   # grafana/helm-charts was deprecated and migrated here in January 2026; the
   # old one still resolves and still installs, which is why it needs saying.
   name: grafana-community
-  namespace: observability
+  namespace: flux-system
 spec:
   url: https://grafana-community.github.io/helm-charts
   interval: 12h
@@ -35,7 +47,7 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
   name: prometheus-community
-  namespace: observability
+  namespace: flux-system
 spec:
   url: https://prometheus-community.github.io/helm-charts
   interval: 12h

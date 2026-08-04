@@ -38,7 +38,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: prometheus-community
-        namespace: observability
+        namespace: flux-system
   install:
     remediation:
       retries: 3
