@@ -82,15 +82,24 @@ Verified on a live cluster — a request from a laptop over the public internet,
 as stored:
 
 ```
-url.path                  = /trace-probe-5
+url.path                  = /
 http.response.status_code = 301
 service.name              = traefik
+service.version           = 3.7.9
 
-k8s.pod.name        = traefik-5779f9b8df-tg8tg
+k8s.pod.name        = traefik-5779f9b8df-5t6pw
 k8s.namespace.name  = traefik
 k8s.deployment.name = traefik
-k8s.node.name       = platform-autoscaled-41cf67a3d8ee27ff
+k8s.node.name       = platform-agent-dof
+k8s.pod.uid         = 5acafbd9-22fb-4fcb-bf74-248c57d1f477
 ```
+
+Those values are read from [`samples/trace-example.json`](samples/trace-example.json),
+which is a real span exported from the cluster and committed beside this file.
+An earlier version of this section quoted a *different* real trace, from an
+earlier build of the same cluster — same shape, different pod and node, and not
+reproducible from anything in this repository. Quoting evidence that does not
+ship with the claim is how documentation drifts; see `LESSONS.md`.
 
 **Protocol independence.** The metric store speaks Prometheus remote-write, not
 OTLP. The collector translates, so the application emits OTLP and never learns
