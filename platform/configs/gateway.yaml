@@ -62,17 +62,14 @@ spec:
     # -----------------------------------------------------------------------
     # Port 443.
     # -----------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # HTTPS LISTENER — COMMENTED UNTIL YOU HAVE A CERTIFICATE ISSUER.
+    # HTTPS LISTENER — COMMENTED UNTIL A CERTIFICATE ISSUER EXISTS.
     #
     # A listener referencing a Secret that does not exist makes the whole
     # Gateway Accepted=False ("All Listeners must be valid"), which under
-    # wait: true blocks this Kustomization, which blocks observability and
-    # tenants behind it. One unobtainable certificate stops the platform.
+    # wait: true blocks this Kustomization and everything behind it.
+    # One unobtainable certificate stops the platform. Verified live.
     #
-    # Verified on a live cluster. Enable this together with an issuer from
-    # platform/configs/optional/ once you have set a real contact address.
-    # ------------------------------------------------------------------
+    # Enable together with an issuer from configs/optional/.
     # - name: https
     #   protocol: HTTPS
     #   port: 8443
@@ -135,25 +132,25 @@ spec:
     # #       selector:
     # #         matchLabels:
     # #           platform.example.com/managed: tenant
-    # 
-    # direct everything arriving on port 80 to HTTPS.
-    # 
-    # Y THIS IS A ROUTE AND NOT AN ENTRYPOINT SETTING. A redirect configured on
-    # e proxy's entrypoint rewrites every request on port 80 unconditionally,
-    # cluding `/.well-known/acme-challenge/...`, so certificate issuance fails
-    # rmanently and looks like a certificate problem rather than a redirect
-    # oblem. As a route it coexists with issuance: cert-manager's challenge route
-    # rries the challenge hostname and an exact path match, and Gateway API
-    # solves conflicts by specificity — a hostname beats no hostname, an exact
-    # th beats a prefix — so the challenge is answered and everything else is
-    # directed.
-    # ersion: gateway.networking.k8s.io/v1
-    # : HTTPRoute
-    # data:
-    # me: http-to-https
-    # mespace: traefik
-    # :
-    # rentRefs:
+---
+# Redirect everything arriving on port 80 to HTTPS.
+#
+# WHY THIS IS A ROUTE AND NOT AN ENTRYPOINT SETTING. A redirect configured on
+# the proxy's entrypoint rewrites every request on port 80 unconditionally,
+# including `/.well-known/acme-challenge/...`, so certificate issuance fails
+# permanently and looks like a certificate problem rather than a redirect
+# problem. As a route it coexists with issuance: cert-manager's challenge route
+# carries the challenge hostname and an exact path match, and Gateway API
+# resolves conflicts by specificity — a hostname beats no hostname, an exact
+# path beats a prefix — so the challenge is answered and everything else is
+# redirected.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https
+  namespace: traefik
+spec:
+  parentRefs:
     - name: platform
       # Attach to the HTTP listener specifically. Without sectionName the route
       # attaches to every listener it is compatible with, which would put a
