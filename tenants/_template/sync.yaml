@@ -74,6 +74,21 @@ spec:
   timeout: 5m
 
   path: ./tenants/REPLACE-tenant/workloads
+
+  # PINS EVERY OBJECT INTO THE TENANT'S NAMESPACE, and it is not a convenience.
+  #
+  # Without it, a workload manifest that omits `namespace` is applied with no
+  # namespace at all. The API server then evaluates the request at CLUSTER
+  # scope, where the tenant's namespaced Role grants nothing, and the
+  # reconciliation fails with "cannot patch resource ... at the cluster scope"
+  # -- naming a resource the Role visibly does allow, which sends you to read
+  # the Role rather than the scope. Verified on a live cluster: an HTTPRoute the
+  # tenant was explicitly permitted to create was refused for this reason.
+  #
+  # It is also the boundary. With targetNamespace set, a tenant cannot place an
+  # object in another namespace by writing one into its own manifest -- the
+  # value here overrides whatever the manifest says.
+  targetNamespace: tenant-REPLACE-tenant
   sourceRef:
     kind: GitRepository
     name: tenant-REPLACE-tenant

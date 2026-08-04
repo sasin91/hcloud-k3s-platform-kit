@@ -69,6 +69,11 @@ spec:
   timeout: 5m
 
   path: ./tenants/sasin91/workloads
+
+  # See _template/sync.yaml for why this is mandatory: without it a manifest
+  # omitting `namespace` is applied at cluster scope, where the tenant's
+  # namespaced Role grants nothing.
+  targetNamespace: tenant-sasin91
   sourceRef:
     kind: GitRepository
     name: tenant-sasin91
