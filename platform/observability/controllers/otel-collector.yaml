@@ -43,6 +43,14 @@ spec:
   interval: 1h
   timeout: 10m
   targetNamespace: observability
+  # PIN THE RELEASE NAME. Flux otherwise derives it as <targetNamespace>-<name>,
+  # and that derived name is an input to every name the chart generates. On a
+  # live cluster it broke three things at once: two Services were renamed so the
+  # endpoints pointing at them silently stopped resolving, and one chart's
+  # generated label crossed the 63-byte limit, leaving the release wedged in
+  # 'uninstalling' -- unable to remediate, because the hook it must run to
+  # uninstall was the invalid object.
+  releaseName: opentelemetry-collector
   chart:
     spec:
       chart: opentelemetry-collector

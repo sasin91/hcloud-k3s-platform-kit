@@ -21,6 +21,14 @@ spec:
   # failing with a message about querying release storage rather than about
   # permissions. Verified on a live cluster.
   targetNamespace: observability
+  # PIN THE RELEASE NAME. Flux otherwise derives it as <targetNamespace>-<name>,
+  # and that derived name is an input to every name the chart generates. On a
+  # live cluster it broke three things at once: two Services were renamed so the
+  # endpoints pointing at them silently stopped resolving, and one chart's
+  # generated label crossed the 63-byte limit, leaving the release wedged in
+  # 'uninstalling' -- unable to remediate, because the hook it must run to
+  # uninstall was the invalid object.
+  releaseName: blackbox-exporter
   # REQUIRED. The lockdown flag --default-service-account=default means a
   # HelmRelease naming no account reconciles as the namespace's default
   # service account, which has no permissions -- helm-controller then cannot
