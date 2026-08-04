@@ -10,8 +10,9 @@
 # The cluster reconciliation for ../configs must therefore declare dependsOn
 # this one. See ../README.md.
 #
-# ../secrets is NOT listed here. The Grafana admin credential is created once,
-# by hand, encrypted to the cluster's age key.
+# ../secrets IS listed below, as a directory. It is empty until a fork creates
+# the Grafana admin credential -- see ../secrets/kustomization.yaml for why the
+# reference is to the directory and not to the file.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -22,3 +23,6 @@ resources:
   - otel-collector.yaml
   - tempo.yaml
   - blackbox-exporter.yaml
+  # A directory, not a file. kustomize refuses to load a file from outside its
+  # own directory; a sibling directory with its own kustomization is fine.
+  - ../secrets
