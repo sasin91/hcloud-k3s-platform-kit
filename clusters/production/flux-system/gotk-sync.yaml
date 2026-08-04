@@ -5,6 +5,16 @@
 # on your behalf. This kit commits it instead, so a fork edits two fields —
 # `url` and `ref.branch` — and applies it. Nothing is written back into the
 # fork's repository, and no personal access token exists anywhere in the flow.
+#
+# EDIT AND COMMIT THIS BEFORE YOU APPLY IT. The Kustomization at the bottom of
+# this file reconciles the directory this file lives in — so it manages this
+# GitRepository. Applying first and then fixing the URL with `kubectl edit`
+# does not work: the root Kustomization reverts your change back to whatever
+# the tracked branch says, every interval, and the only way to hold the edit is
+# to suspend the very reconciler you are trying to start. Observed on a live
+# cluster, and it reads as Flux ignoring you rather than as Flux working.
+#
+# The order that works is: fork, edit these two fields, commit, push, apply.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository

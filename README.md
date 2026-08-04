@@ -82,7 +82,18 @@ packer build -only='hcloud.leapmicro-x86-snapshot' hcloud-leapmicro-snapshots.pk
 # 4. Build the cluster
 tofu init && tofu apply
 
-# 5. Generate the root of trust and install Flux.
+# 5. Point the sync at YOUR fork -- as a COMMIT, before anything is applied.
+#    Edit `url` and `ref.branch` in clusters/<name>/flux-system/gotk-sync.yaml,
+#    then commit and push. Doing this afterwards with `kubectl edit` does not
+#    work: that file is reconciled by the Kustomization it defines, so the edit
+#    is reverted every interval and the only way to hold it is to suspend the
+#    reconciler you are trying to start.
+#
+#    A PUBLIC fork needs no credential -- use the https:// URL and delete the
+#    secretRef. A PRIVATE fork needs a read-only deploy key, which is then a
+#    second hand-applied secret. See the comments in that file.
+
+# 6. Generate the root of trust and install Flux.
 #    Apply TWICE. The first apply creates the custom resource definitions and
 #    then fails on the resources that use them -- kubectl does not wait for a
 #    definition it created in the same pass to become established. The second
@@ -93,7 +104,18 @@ kubectl apply -k clusters/<name>/flux-system   # now succeeds
 kubectl create secret generic sops-age \
   --namespace flux-system --from-file=age.agekey=age.agekey
 
-# 6. Register a READ-ONLY deploy key on your fork and point the sync at it
+# 7. Create the Grafana admin credential, encrypted to that key, and commit it.
+#    There is no default password. Grafana will not start without this secret,
+#    an unstarted Grafana keeps the observability layer from reporting Ready,
+#    and the layers chained behind it therefore never apply. So a missing
+#    credential presents as "tenants never deploy", several layers away.
+#
+#    See platform/observability/secrets/grafana-admin.sops.yaml.example
+cp platform/observability/secrets/grafana-admin.sops.yaml.example \
+   platform/observability/secrets/grafana-admin.sops.yaml
+# ...edit the password, then:
+sops --encrypt --in-place platform/observability/secrets/grafana-admin.sops.yaml
+git add platform/observability/secrets/grafana-admin.sops.yaml && git commit && git push
 ```
 
 Step 3 is not optional and is the most likely place a first run stops. The
