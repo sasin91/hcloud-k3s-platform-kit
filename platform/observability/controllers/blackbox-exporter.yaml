@@ -12,8 +12,15 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: blackbox-exporter
-  namespace: observability
+  namespace: flux-system
 spec:
+  # The release object lives in flux-system; targetNamespace directs where the
+  # chart installs. This is not cosmetic. serviceAccountName resolves in the
+  # HelmRelease's OWN namespace, so a release sitting in the workload namespace
+  # names an account that does not exist there and reconciles powerless --
+  # failing with a message about querying release storage rather than about
+  # permissions. Verified on a live cluster.
+  targetNamespace: observability
   # REQUIRED. The lockdown flag --default-service-account=default means a
   # HelmRelease naming no account reconciles as the namespace's default
   # service account, which has no permissions -- helm-controller then cannot
