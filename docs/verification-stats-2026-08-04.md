@@ -136,7 +136,23 @@ an unauthenticated API call.
 | Operation | Result |
 |---|---|
 | `tofu apply` (clean) | **55 resources added** |
-| `tofu destroy` (clean) | **52 resources destroyed** |
+| `tofu destroy` (clean) | **55 resources destroyed**, exit 0 |
+
+Final teardown, following the documented order:
+
+1. `scripts/teardown.sh --delete` removed 3 CSI volumes and 1 cloud-controller
+   load balancer — **none of which OpenTofu knew about**.
+2. `tofu destroy` then completed cleanly, 55 resources, exit 0.
+3. Re-listing the whole project found **0 servers, 0 load balancers, 0 volumes,
+   0 networks, 0 firewalls, 0 primary IPs, 0 floating IPs**.
+
+What remained: one Packer-built OS snapshot (1.42 GB actual, ~EUR 0.02/month,
+worth keeping — rebuilding it is a Packer run), plus a placement group and two
+SSH keys that all pre-dated the verification and belong to the account, not to
+this cluster.
+
+Had step 1 been skipped, step 2 would have failed on the network the load
+balancer was still attached to.
 
 Four full build/teardown cycles were run over the verification. Node layer to
 `Ready` is minutes; **full reconciliation of the whole chain is the long pole**,
