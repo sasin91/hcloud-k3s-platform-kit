@@ -26,6 +26,22 @@ kind: Namespace
 metadata:
   name: traefik
   labels:
+    # THE LABEL EVERY TENANT'S INGRESS RULE SELECTS ON, and it was missing.
+    #
+    # tenants/_template/networkpolicy.yaml permits ingress only from namespaces
+    # carrying it. Nothing in this kit ever applied it, so that allowance matched
+    # no namespace at all, the tenant's default-deny stood, and the ingress could
+    # not reach a single tenant pod.
+    #
+    # It surfaces as HTTP 502 from the proxy. The route is Accepted, the Service
+    # has healthy endpoints, the pods are Running and serve correctly when
+    # reached from inside the namespace -- so every object you would think to
+    # inspect looks right, and the failure reads as a broken application.
+    # Verified on a live cluster with a real tenant.
+    #
+    # A NetworkPolicy selector naming a label nobody sets is a default-deny with
+    # extra steps.
+    platform.example.com/role: gateway
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/warn: restricted

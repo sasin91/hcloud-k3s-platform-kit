@@ -227,23 +227,25 @@ No kubeconfig is ever placed in a CI system.
 
 Parts of this kit have now been **run on a real cluster**. Where a claim is verified it says so; where it is not, it says that too.
 
-**Verified on a live cluster, 2026-08-04:**
+**Verified on a live cluster, 2026-08-04, across four full build/teardown cycles:**
 
-- The node layer builds. `apply` completed with 45 resources and no errors; both nodes reached `Ready` on the pinned Kubernetes version.
-- Flux installs from the committed manifests, and all four controllers run.
+- The node layer builds and tears down cleanly. A **three-node HA control plane** forms, all members `Ready` with etcd, on the pinned Kubernetes version.
+- **The entire reconciliation chain converges from this repository with no manual intervention** — 9 of 9 Kustomizations and 8 of 8 HelmReleases `Ready`, including the tenants layer. The `dependsOn` chain gates in the right order: CRDs, then releases, then the configs that consume them.
 - **The multi-tenancy lockdown flags are live on the running controllers**, in the correct per-controller matrix — verified by reading container arguments off the cluster, not by inspecting patch files.
-- **Flux reconciles from a git source and applies what it finds**, under those lockdown flags, using a named service account.
+- **SOPS decryption works end to end.** A secret encrypted to the cluster's age recipient, committed to git, is decrypted by kustomize-controller and applied — and the component that needs it starts.
 - **The hostname-authorisation admission policy compiles and enforces.** A route claiming another tenant's hostname is refused; so is a route declaring no hostname at all, which would otherwise inherit a shared listener's and claim everything it serves.
-- `destroy` removes everything **it created** -- repeated teardowns cleared 26, 22 and 39 resources. It does **not** remove what the cluster created at runtime (autoscaler servers, cloud-controller load balancers, CSI volumes), because those were never in its state. Run `scripts/teardown.sh --delete` first; see below.
-- Object storage supports conditional writes, so native state locking is real, and default Go SDK checksums work, so no workaround ships.
-- **The platform and observability layers install from this repository.** Ingress, certificates, metrics, the trace store and the collector were all reconciled onto the cluster by Flux from the committed manifests.
 - **cert-manager issued a real certificate** from Let's Encrypt for a domain pointed at the cluster.
-- **Traces reach the trace store with Kubernetes context attached.** A request made from a laptop over the public internet arrived as a span carrying `url.path`, status code, and the `k8s.pod.name` / `k8s.namespace.name` / `k8s.node.name` of the ingress pod that served it — stamped by the collector, which is the entire reason it sits in the path.
+- **Ingress runs HA for real** — two replicas across two nodes with a disruption budget, and the Gateway reports `Programmed`.
+- **Traces reach the trace store with Kubernetes context attached.** A request made from a laptop over the public internet arrives as a span carrying `url.path`, the status code, and the `k8s.pod.name` / `k8s.namespace.name` / `k8s.node.name` of the ingress pod that served it — stamped by the collector, which is the entire reason it sits in the path.
+- Object storage supports conditional writes, so native state locking is real, and default Go SDK checksums work, so no workaround ships.
+- **Teardown is complete only with `scripts/teardown.sh` run first** — see Teardown above. This is a correction: the earlier claim that `destroy` alone was clean held only for clusters that had never autoscaled, served a `LoadBalancer` Service, or bound a PVC.
 
 **Not yet verified:**
 
-- **The tenant template applied for real** — its manifests validate, but no tenant has been created from it.
-- **The full HA shape.** A project-level address quota capped the test at two nodes, and the module correctly refuses a two-node control plane, so anti-affinity and disruption-budget behaviour remain untested by construction.
+- **A tenant generated from the template and actually running a workload.** The layer reconciles and the template validates, but the resource list ships empty by design, so no namespace has been created from it.
+- **Backups restoring.** The CronJob is generated with every tenant; no restore has been exercised.
+- **Autoscaler scale-out under real pressure.** The verification project's server quota left no headroom to test it.
+- **A control plane surviving the loss of a member.** Three members formed and were healthy; no member was killed to watch the remaining two carry on.
 
 Prices and instance availability quoted anywhere here are dated observations, not permanent properties — see `LESSONS.md` for how fast that turned out to matter.
 
