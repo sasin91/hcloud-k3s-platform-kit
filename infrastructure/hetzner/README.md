@@ -194,3 +194,77 @@ Review `k3s_channel` at the same time. It is pinned to a minor channel rather
 than `stable`, because `stable` is an unpinned dependency wearing a reassuring
 name: it crosses minor boundaries on somebody else's schedule, and with
 automatic upgrades on that happens without a diff in this repository.
+
+## Two prerequisites that are easy to get wrong
+
+Both were found by running this against a real project on 2026-08-04, not by
+reading documentation.
+
+### The OS snapshot must exist first, and nothing creates it
+
+The module resolves its node image by **label selector**. A project without the
+snapshot fails at plan time with:
+
+```
+Resource (image) was not found using label selector:
+  leapmicro-snapshot=yes,kube-hetzner/os=leapmicro,kube-hetzner/k8s-distro=k3s
+```
+
+That reads like a permissions problem. It is not. Build it first, from the
+template vendored in the module itself:
+
+```bash
+packer init  .terraform/modules/kube_hetzner/packer-template/hcloud-leapmicro-snapshots.pkr.hcl
+packer build -only='hcloud.leapmicro-x86-snapshot'              .terraform/modules/kube_hetzner/packer-template/hcloud-leapmicro-snapshots.pkr.hcl
+```
+
+Build **only** the architecture you use. The template also contains an Arm
+source, and at the time of writing no Arm instance type was purchasable in any
+datacentre in this region — so building both fails on the half you do not need.
+The x86 build takes about five minutes and destroys its own temporary server.
+
+### Do NOT pre-register your SSH key in the project
+
+This is counter-intuitive, and it stops the apply dead:
+
+```
+Error: SSH key not unique (uniqueness_error) — status 409
+  with module.kube_hetzner.hcloud_ssh_key.k3s[0]
+```
+
+The module registers the key itself from `ssh_public_key`. Adding the same key
+to the project by hand first — the obvious preparatory step — makes the module's
+own registration a duplicate, and the provider rejects it.
+
+Supply the key as a variable and let the module own it. You still hold the
+private half, so node access is unaffected.
+
+### Your project's resource quota may stop you before stock does
+
+A Hetzner project has a cap on primary IP addresses, and a dual-stack node
+consumes **two** — one IPv4, one IPv6. A five-node cluster therefore needs ten,
+which a project that has not had its limits raised will refuse:
+
+```
+Error: Primary IP limit exceeded (resource_limit_exceeded)
+```
+
+Two things make this worse than a plain quota error. It arrives **mid-apply**,
+after some nodes exist and some do not, so you are left converging a partial
+cluster. And it is invisible beforehand — the API exposes no limit figure to
+check against, so the only way to know is to hit it.
+
+If you meet it: raise the project limit through support, or reduce the node
+count. There is no per-nodepool switch to run nodes without public addresses
+except on the autoscaler pool.
+
+### The module refuses a two-node control plane, and it is right to
+
+Setting the control-plane count to 2 fails validation outright. Two etcd members
+are strictly worse than one: quorum is 2 of 2, so losing either stops the
+cluster, whereas a single member at least fails only when it fails. One is
+acceptable and non-HA; three is the smallest useful HA count.
+
+This is worth knowing because 2 is exactly what someone reaches for when a
+quota blocks 3 — and the module stops them. Reduce to 1 and accept non-HA, or
+raise the quota. Do not go to 2.

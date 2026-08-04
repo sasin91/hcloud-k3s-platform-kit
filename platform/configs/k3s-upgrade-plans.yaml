@@ -39,11 +39,11 @@ spec:
   # anything reporting an error. Raise it one minor at a time.
   #
   # The channel list this URL comes from: https://update.k3s.io/v1-release/channels
-  channel: https://update.k3s.io/v1-release/channels/v1.36
+  channel: https://update.k3s.io/v1-release/channels/v1.35
   #
   # To pin an exact version instead — for a change window, or to hold a cluster
   # at a known release — replace the channel with:
-  # version: v1.36.2+k3s1
+  # version: v1.35.6+k3s1
 
   # One server at a time, always. The control plane is a quorum; upgrading two
   # members of a three-member cluster at once is losing it.
@@ -73,7 +73,7 @@ metadata:
   labels:
     k3s-upgrade: agent
 spec:
-  channel: https://update.k3s.io/v1-release/channels/v1.36
+  channel: https://update.k3s.io/v1-release/channels/v1.35
   concurrency: 1
   serviceAccountName: system-upgrade
 

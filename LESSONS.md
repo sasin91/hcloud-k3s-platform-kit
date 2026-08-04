@@ -60,6 +60,18 @@ Cloud APIs distinguish the instance types a location *supports* from those it cu
 
 > **Availability is not a property you check once.** A pool created when its type was in stock keeps that type in its configuration forever. Stock changes; the configuration does not.
 
+**This was demonstrated on this kit, by this kit, within twenty-four hours.**
+
+On 2026-08-03 the provider's API reported the entire cost-optimised instance line available in one datacentre, and those types became the kit's defaults. On 2026-08-04 an apply of that configuration failed with `resource_unavailable` — and a fresh query showed **every type in that line unavailable in all three datacentres of the region**, not merely the one. Two nodes had already been created before stock ran out, so the failure landed *mid-apply*, with some infrastructure built and some not.
+
+Three things that episode settles, which no amount of reading would have:
+
+- The window is **days, not quarters**. A dated observation about availability is stale almost immediately, and documentation stating what is available is wrong by construction.
+- Stock exhausts across a **whole product line at once**, not per type. Choosing a different size within the same family is not a fallback.
+- A fallback on a *different* line was available throughout. Cross-line beats cross-size, and cross-location did not help at all here — the shortage was regional.
+
+The check that catches this must therefore run **before every apply**, not only on a schedule, and it must be cheap enough that nobody is tempted to skip it.
+
 Corollary: **treat a fallback that has never once been provisioned as unproven, not as insurance.** A second pool naming an equally unavailable type protects nobody, and its presence stops anyone looking.
 
 *Guardrail: fail if any declared pool names a type not currently available in its location — and run it on a schedule, not only before apply.*

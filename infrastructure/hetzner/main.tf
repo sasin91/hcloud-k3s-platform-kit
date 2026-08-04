@@ -285,11 +285,39 @@ module "kube_hetzner" {
   # that reported success. If it names a LOWER one, the Plan silently stops
   # delivering patches and the cluster quietly falls behind on security fixes.
   #
-  # v1.36 is the current stable minor (https://update.k3s.io/v1-release/channels
-  # resolved `stable` to v1.36.2+k3s1 on 2026-08-04). Verify before you apply;
-  # this is a dated observation, not a property.
+  # THE VERSION IS PINNED EXACTLY, AND THE CHANNEL IS LEFT ALONE. That looks
+  # redundant. It is not, and the reason is worth knowing before you "simplify"
+  # it back to a channel.
+  #
+  # The module validates this input TWICE, with DIFFERENT allowed sets:
+  #
+  #   variables.tf          accepts stable, latest, testing, and v1.16 .. v1.35
+  #   validation-contract.tf accepts stable, latest, testing, and v1.33 ONLY
+  #                          -- but only when k3s_version is empty
+  #
+  # So a value can satisfy the variable rule and fail the contract. Setting a
+  # minor channel of v1.34 or v1.35 passes `validate` and then fails `plan`,
+  # which is a genuinely confusing place to learn it. Only v1.33 works as a
+  # channel, and v1.33 is three minors behind current.
+  #
+  # Supplying k3s_version instead lifts the contract entirely, and it is the
+  # better fit anyway: an exact version is a pin, a channel is a subscription to
+  # someone else's release schedule. Patch upgrades within the minor are then
+  # the upgrade controller's job in the GitOps layer, deliberately, rather than
+  # something that happens at build time depending on the day.
+  #
+  # BOTH HALVES MUST MOVE TOGETHER with platform/configs/k3s-upgrade-plans.yaml.
+  # Nothing enforces that correspondence. If the Plan names a higher minor, the
+  # controller walks the cluster there unattended hours after a build that
+  # reported success; if lower, it silently stops delivering security patches.
+  #
+  # Verified by running `tofu validate` and `tofu plan` against the pinned module
+  # on 2026-08-04. Reading the module's documentation would not have surfaced the
+  # second validation. Channel resolutions that day: v1.35 -> v1.35.6+k3s1,
+  # v1.36 -> v1.36.2+k3s1 (v1.36 is unusable here at all). Dated observations.
   # ---------------------------------------------------------------------------
-  k3s_channel = "v1.36"
+  k3s_channel = "stable"
+  k3s_version = "v1.35.6+k3s1"
 
   # ---------------------------------------------------------------------------
   # Layer boundary: this configuration builds nodes. It does not install the

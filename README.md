@@ -26,7 +26,7 @@ It is a dependency, not a fork. See [NOTICE](NOTICE).
 | Certificates | **cert-manager** only | The ingress runs no ACME client, so it runs more than one replica |
 | Routing | **Gateway API** for HTTP | Platform owns the Gateway, tenants own Routes, and `allowedRoutes` decides who may attach |
 | Observability | VictoriaMetrics stack, Vector → VictoriaLogs, Tempo, Grafana | Not exposed by default. Reached by port-forward |
-| Databases | MariaDB operator | CloudNativePG and Valkey ship commented out |
+| Databases | **none by default** | MariaDB, CloudNativePG and Valkey all ship commented out |
 | Tenancy | Namespace per tenant, generated with its guarantees | Quota, limits, NetworkPolicy, PDB, backup, pod security, service account and RBAC |
 | Backups | restic, one repository per namespace | The provider's block volumes have no snapshots at all |
 
@@ -39,23 +39,41 @@ Three-node HA control plane · etcd snapshots to object storage · a `Retain` St
 ## Day zero
 
 ```bash
+# 0. Check the instance types in your config are AVAILABLE, not merely supported.
+#    Do this before every apply, not only on a schedule. On 2026-08-04 an entire
+#    instance line went unavailable across all three datacentres of this region
+#    within a day of being recorded as available, and the apply failed halfway.
+python scripts/checks/check-pool-availability.py
+
 # 1. Generate an object-storage credential in the provider console.
 #    This step cannot be automated — the provider CLI has no object-storage commands.
 
 # 2. Create the two buckets (state, versioned — snapshots, expiring)
 ./scripts/bootstrap-buckets.sh
 
-# 3. Build the cluster
+# 3. Build the OS snapshot the nodes boot from. REQUIRED, and easy to miss:
+#    the node module looks the image up by label and fails the plan if it is
+#    absent. Nothing creates it for you.
+packer init  hcloud-leapmicro-snapshots.pkr.hcl
+packer build -only='hcloud.leapmicro-x86-snapshot' hcloud-leapmicro-snapshots.pkr.hcl
+
+# 4. Build the cluster
 tofu init && tofu apply
 
-# 4. Generate the root of trust and install Flux
+# 5. Generate the root of trust and install Flux
 age-keygen -o age.agekey
 kubectl apply -k clusters/<name>/flux-system
 kubectl create secret generic sops-age \
   --namespace flux-system --from-file=age.agekey=age.agekey
 
-# 5. Register a READ-ONLY deploy key on your fork and point the sync at it
+# 6. Register a READ-ONLY deploy key on your fork and point the sync at it
 ```
+
+Step 3 is not optional and is the most likely place a first run stops. The
+module resolves its image by label selector, so a project without the snapshot
+fails with `Resource (image) was not found using label selector` — which reads
+like a permissions problem and is not one. The Packer template comes from the
+upstream module; see `infrastructure/hetzner/README.md`.
 
 No personal access token. No admin-scoped credential. Nothing written back into your repository on your behalf. You can read exactly what will be applied before applying it, and the Flux version is a line in your own diff.
 
@@ -91,23 +109,31 @@ No kubeconfig is ever placed in a CI system.
 
 ## Example tenants
 
-Two game-server emulators, as **two different workloads sharing one cluster** — which demonstrates tenancy better than two copies of one thing. They exercise paths a web application never touches: raw TCP with no hostname multiplexing, a database per tenant, and a simulation that does not scale horizontally at all.
+**There are none, deliberately.** The tenant template generates the quota, limit range, NetworkPolicy, disruption budget, backup job, pod-security level, service account and RBAC. That *is* the tenancy model — a workload occupying a namespace demonstrates nothing the template does not already state.
 
-Realm traffic **bypasses the ingress proxy entirely**, on a load balancer with an explicitly declared port pair per realm.
-
-> A reverse proxy is a shared restart domain. It terminates every connection passing through it, so restarting it destroys them all. For HTTP that is invisible. For a long-lived session it means every user disconnected, every time anyone touches ingress.
-
-**For educational purposes.** This repository ships no game data and no means of obtaining any. See [NOTICE](NOTICE).
+`tenants/kustomization.yaml` ships with an empty resource list. Do not delete it because it looks pointless: without it the reconciler scans the directory, finds the template with its tokens unreplaced, and applies a namespace named after a placeholder — cleanly, and without error.
 
 ---
 
 ## Status — read this before trusting anything
 
-**Almost nothing here has been verified against a running cluster.** The first real pilot is the verification. Where a claim has been measured, it says so and carries a date.
+The infrastructure layer has been **applied against a real provider account**. Everything above it has not.
 
-Measured on 2026-08-03, one location, one project: the object storage supports conditional writes, so native state locking is real and ships enabled; and the Go SDK's default checksum behaviour works, so **no checksum workaround ships** — adding one defensively would disable an integrity check that demonstrably works.
+**Verified by running it, 2026-08-04:**
 
-Prices and instance availability quoted anywhere in this repository are dated observations, not permanent properties. Both move.
+- The pinned module resolves, providers resolve, and every input validates against the real module.
+- `plan` computes the full graph — 79 resources.
+- `apply` creates real infrastructure: network, subnets, placement groups, firewall, servers, load balancer.
+- `destroy` is clean. Two separate teardowns removed 26 and 22 resources with **zero residue** — no orphaned network, volume, address or snapshot.
+- Object storage supports conditional writes, so native state locking is real; and the Go SDK's default checksum behaviour works, so **no checksum workaround ships**. Measured 2026-08-03, one location.
+
+**NOT verified, and this is the important half:**
+
+- **Node provisioning did not converge.** SSH authentication to freshly created nodes timed out after ten minutes, so k3s never started. The failure is in the node module's own provisioning path, not in this repository's configuration — the firewall was open, the key was registered, and the same image had accepted the same key on an earlier run.
+- Consequently **nothing above the node layer has ever run**: Flux, cert-manager, the Gateway, the tenant template, and the admission policy's CEL expression have never been evaluated by an API server.
+- The **full HA shape was not reachable** in the test project. A project-level primary-IP quota caps it at three dual-stack nodes, and the module correctly refuses a two-node control plane, so the run used one control plane and one agent. Anti-affinity and disruption-budget behaviour therefore remain untested by construction.
+
+Prices and instance availability quoted anywhere here are dated observations, not permanent properties. Both move — see `LESSONS.md` for how fast.
 
 ---
 
