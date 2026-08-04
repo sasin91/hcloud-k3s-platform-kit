@@ -56,6 +56,13 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # PIN THE GENERATED NAME. Without this the chart derives service names from
+    # the Helm release name, which Flux forms as <targetNamespace>-<name> -- so
+    # moving a HelmRelease between namespaces silently renames its Service and
+    # breaks every endpoint that referenced it. Nothing errors: the exporter
+    # keeps sending to a name that no longer resolves and the data is simply
+    # gone. Verified on a live cluster, twice in one pipeline.
+    fullnameOverride: tempo
     replicas: 1
     tempo:
       # Do not report the shape of this deployment to a third party.
