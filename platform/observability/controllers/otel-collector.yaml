@@ -137,10 +137,31 @@ spec:
           send_batch_size: 512
 
       exporters:
+        # Traces.
         otlp/tempo:
           endpoint: tempo.observability.svc.cluster.local:4317
           tls:
             insecure: true
+
+        # Metrics. The metric store speaks Prometheus remote-write, so the
+        # application emits OTLP and never learns that. The indirection is the
+        # point: the store is replaceable without touching a workload.
+        #
+        # These hostnames are stable only because every release pins
+        # releaseName. Without it the chart derives service names from a value
+        # that changes when the release moves, and this endpoint silently stops
+        # resolving -- see LESSONS.md.
+        prometheusremotewrite:
+          endpoint: http://vmsingle-victoria-metrics-k8s-stack.observability.svc.cluster.local:8428/api/v1/write
+          # Carry the k8s.* resource attributes onto the series as labels.
+          # Without this a metric arrives not knowing which pod produced it and
+          # cannot be lined up with the trace from the same request.
+          resource_to_telemetry_conversion:
+            enabled: true
+
+        # Logs. Same shape: OTLP in, the store's native protocol out.
+        otlphttp/victorialogs:
+          logs_endpoint: http://victoria-logs-single-server.observability.svc.cluster.local:9428/insert/opentelemetry/v1/logs
 
       service:
         pipelines:
@@ -150,6 +171,20 @@ spec:
             # before any work has been done on it.
             processors: [memory_limiter, k8sattributes, batch]
             exporters: [otlp/tempo]
+
+          # One receiver, three destinations. An application configures a single
+          # endpoint and gets all three signals routed and enriched identically
+          # -- which is what makes a trace, the metrics it moved, and the log
+          # lines it wrote joinable by pod and namespace instead of by guesswork.
+          metrics:
+            receivers: [otlp]
+            processors: [memory_limiter, k8sattributes, batch]
+            exporters: [prometheusremotewrite]
+
+          logs:
+            receivers: [otlp]
+            processors: [memory_limiter, k8sattributes, batch]
+            exporters: [otlphttp/victorialogs]
 
         telemetry:
           metrics:

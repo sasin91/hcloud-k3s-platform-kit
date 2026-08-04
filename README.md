@@ -6,6 +6,28 @@ A decided k3s platform for Hetzner Cloud — GitOps delivery, encrypted secrets,
 
 ---
 
+## Why this and not an afternoon with an LLM
+
+Ask a good model for a k3s platform on Hetzner and you will get one. It will be coherent, it will be conventional, and most of it will work. That is genuinely most of the value, and this kit does not pretend otherwise — it is the same shapes, built with the same tools, arrived at the same way.
+
+The difference is a day or two of tokens you don't spend, and one specific category of failure you don't have to find yourself.
+
+Everything in [LESSONS.md](LESSONS.md) is a thing that **reported success**:
+
+- A line-ending default rewrote a file inside a fetched module, a policy failed to compile at boot, and the orchestrator never started — while every server reported healthy and SSH worked fine.
+- A delivery tool derived a Helm release name from the namespace it targeted. That renamed two Services. The components exporting to them kept exporting to the old names. No error in any component — just an empty trace store.
+- The same rename pushed a generated label past 63 bytes, wedging a release that could neither install nor uninstall, because the hook required to remove it was itself the invalid object.
+- A placeholder contact address in an issuer produced an ACME rejection, no certificate, an unresolvable listener, and a gateway that would not accept routes — presenting as a routing problem four layers from its cause.
+- A load balancer annotation left at `CHANGE-ME` reported a successful release, then failed silently in the cloud controller for fifty minutes.
+
+None of those are exotic. Each is what happens when a plausible default meets a real provider, and none of them announce themselves — which is exactly why a generated config that looks right can be wrong for a week. They were found by building this on a real cluster, breaking it, and reading the API server rather than the manifests.
+
+**What you get:** decisions already made and defended, the guardrails that keep them true, and a list of failures whose only cheap source is somebody else having had them.
+
+**What you should still do:** read it, fork it, and disagree with it — the reasoning is attached to every decision specifically so you can. It is opinionated infrastructure, not a black box, and an opinion you haven't examined is worse than one you generated yourself.
+
+---
+
 ## Built on
 
 This kit consumes [**terraform-hcloud-kube-hetzner**](https://github.com/mysticaltech/terraform-hcloud-kube-hetzner) (MIT) as a pinned module dependency. That project solves cluster creation — image building, cloud-init, HA control planes, cloud controller and CSI wiring, coordinated node upgrades — and none of it is reimplemented here.
