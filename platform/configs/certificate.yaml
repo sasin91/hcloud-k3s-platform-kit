@@ -1,0 +1,23 @@
+---
+# The platform's serving certificate.
+#
+# CREATED BEFORE THE LISTENER THAT USES IT, deliberately. A listener whose
+# certificateRef names a Secret that does not exist makes the Gateway
+# Accepted=False -- "All Listeners must be valid" -- which under wait: true
+# blocks this Kustomization and everything chained behind it. One unobtainable
+# certificate stops the platform.
+#
+# So: this object first, confirm the Secret appears, then uncomment the listener
+# in gateway.yaml. Two commits, in that order.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-tls
+  namespace: traefik
+spec:
+  secretName: platform-tls
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+  dnsNames:
+    - sasin91.quazye.lol

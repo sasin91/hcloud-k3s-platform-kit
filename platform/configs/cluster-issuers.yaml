@@ -1,0 +1,122 @@
+---
+# Certificate authorities for the whole cluster.
+#
+# ClusterIssuer rather than Issuer: one ACME account, one set of rate limits,
+# one place to look. Per-namespace issuers are sometimes proposed as a way to
+# stop a tenant obtaining a certificate for somebody else's hostname — they do
+# not, because the restriction that matters is on which hostnames a route may
+# claim, not on which issuer signs it. That restriction is in
+# httproute-hostname-policy.yaml.
+#
+# BEFORE APPLYING: replace the two email addresses. The ACME account is
+# registered against them, expiry warnings go to them, and there is no way to
+# find out later which address an account was created with.
+
+# ---------------------------------------------------------------------------
+# Staging. Use this first, every time.
+# ---------------------------------------------------------------------------
+# Its certificates are not trusted by browsers, and that is the point: the
+# production authority enforces a hard weekly limit on certificates per
+# registered domain, and a Gateway with a hostname that does not resolve yet
+# will burn through it in an afternoon while looking like it is merely
+# retrying. There is no way to un-spend that. Point the Gateway at staging
+# until a certificate is issued, then move it.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: jonas.kerwin.hansen@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          # The challenge is answered through the platform Gateway, because
+          # Gateway API is the only HTTP routing this cluster has. cert-manager
+          # creates a short-lived HTTPRoute attached to the parent below, with
+          # an exact path match on the challenge path — which is what lets the
+          # catch-all redirect route coexist with it.
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: platform
+                namespace: traefik
+                kind: Gateway
+                group: gateway.networking.k8s.io
+---
+# ---------------------------------------------------------------------------
+# Production. HTTP-01, the default.
+# ---------------------------------------------------------------------------
+# HTTP-01 because it needs no credentials for anything: a stranger who forked
+# this repository can point a hostname at the load balancer and get a
+# certificate, with no DNS provider account, no API token, and no secret to
+# encrypt. That property is worth more as a default than wildcard support is.
+#
+# It has two hard limits, and both are reasons to use DNS-01 rather than
+# reasons to work around HTTP-01:
+#   - it cannot issue a wildcard certificate, ever;
+#   - it cannot complete behind a proxying CDN, because the challenge request
+#     is answered by the CDN's edge rather than reaching this cluster.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: jonas.kerwin.hansen@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: platform
+                namespace: traefik
+                kind: Gateway
+                group: gateway.networking.k8s.io
+
+# ---------------------------------------------------------------------------
+# DNS-01. Not installed. Required for two situations, not optional in either.
+# ---------------------------------------------------------------------------
+# 1. A wildcard certificate. `*.example.com` cannot be issued over HTTP-01 by
+#    the protocol, not by configuration. If the Gateway is to carry one
+#    listener serving every tenant hostname instead of one listener per
+#    hostname, this is the only way to get the certificate for it.
+# 2. Anything behind a proxying CDN or web application firewall, where the
+#    HTTP-01 request never reaches this cluster at all.
+#
+# The cost, stated plainly: a credential that can edit the DNS zone, which is a
+# more dangerous secret than anything else this platform holds. It belongs
+# encrypted in the repository like every other secret, and it should be scoped
+# to the one zone if the provider allows it.
+#
+# The example below is one common provider's shape. Substitute the one that
+# matches your zone — several providers, including this cluster's own host, have
+# no built-in solver in cert-manager and need a separately installed webhook
+# solver, which is a whole additional component to pin and maintain.
+#
+# ---
+# apiVersion: cert-manager.io/v1
+# kind: ClusterIssuer
+# metadata:
+#   name: letsencrypt-dns01
+# spec:
+#   acme:
+#     server: https://acme-v02.api.letsencrypt.org/directory
+#     email: jonas.kerwin.hansen@gmail.com
+#     privateKeySecretRef:
+#       name: letsencrypt-dns01-account-key
+#     solvers:
+#       - dns01:
+#           cloudflare:
+#             apiTokenSecretRef:
+#               name: cloudflare-api-token
+#               key: api-token
+#         # Restrict which names this solver will answer for. Without a
+#         # selector a single misconfigured route can send a zone-editing
+#         # credential after a name nobody intended.
+#         selector:
+#           dnsZones:
+#             - example.com

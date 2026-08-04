@@ -11,6 +11,8 @@ kind: Kustomization
 # platform/README.md for the shape of that declaration; the file that carries it
 # lives under clusters/, because a fork names its cluster once.
 resources:
+  - certificate.yaml
+  - cluster-issuers.yaml
   # Needs cert-manager's definitions and its webhook to be answering.
   # Needs the Gateway API definitions and the GatewayClass the ingress creates.
   - gateway.yaml
