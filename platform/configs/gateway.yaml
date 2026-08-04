@@ -59,6 +59,40 @@ spec:
           # because that is where the Gateway is. Tenants have no reason to
           # serve anything on port 80 and are not permitted to.
           from: Same
+
+    # -----------------------------------------------------------------------
+    # Port 443. ENABLED -- the certificate is issued before this listener
+    # exists, because a listener naming an absent Secret makes the whole
+    # Gateway Accepted=False and blocks this layer under wait: true.
+    # -----------------------------------------------------------------------
+    # 8443 is the chart's websecure entrypoint; the Service maps 443 onto it.
+    # Writing 443 here produces a listener matching no entrypoint.
+    - name: https
+      protocol: HTTPS
+      port: 8443
+      # One listener serves one hostname, so onboarding another tenant hostname
+      # is another listener -- a platform action, deliberately. The wildcard
+      # listener commented below is the honest answer at scale, and needs DNS-01.
+      hostname: sasin91.quazye.lol
+      tls:
+        mode: Terminate
+        certificateRefs:
+          # Same namespace as the Gateway, so no ReferenceGrant is involved.
+          - name: platform-tls
+            kind: Secret
+            group: ""
+      allowedRoutes:
+        namespaces:
+          # Only namespaces carrying the tenant label may attach. `All` would let
+          # any namespace in the cluster publish on the platform's addresses.
+          #
+          # This is the same label the hostname admission policy binds on, and the
+          # two must agree: a namespace that can attach a route but sits outside
+          # the policy's binding can claim any hostname it likes.
+          from: Selector
+          selector:
+            matchLabels:
+              platform.example.com/managed: tenant
     # -----------------------------------------------------------------------
     # Port 443.
     # -----------------------------------------------------------------------
