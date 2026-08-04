@@ -113,12 +113,25 @@ kubectl create secret generic sops-age \
 #    and the layers chained behind it therefore never apply. So a missing
 #    credential presents as "tenants never deploy", several layers away.
 #
+#    THREE fork-specific edits are needed, and none can be shipped for you:
+#      a) .sops.yaml -- replace the placeholder recipient with the PUBLIC key
+#         age-keygen printed above. Encrypting against the placeholder yields a
+#         file that looks encrypted and that this cluster cannot read.
+#      b) the secret itself, encrypted to that recipient
+#      c) platform/observability/secrets/kustomization.yaml -- uncomment the
+#         entry naming it. NOT ../controllers/kustomization.yaml: kustomize
+#         refuses to load a file from outside its own directory, so controllers
+#         references the secrets DIRECTORY instead.
+#
 #    See platform/observability/secrets/grafana-admin.sops.yaml.example
 cp platform/observability/secrets/grafana-admin.sops.yaml.example \
    platform/observability/secrets/grafana-admin.sops.yaml
-# ...edit the password, then:
-sops --encrypt --in-place platform/observability/secrets/grafana-admin.sops.yaml
-git add platform/observability/secrets/grafana-admin.sops.yaml && git commit && git push
+# ...put a real password in it, then encrypt to your own recipient:
+sops --encrypt --in-place --encrypted-regex '^(data|stringData)$' \
+     --age <your age PUBLIC key> \
+     platform/observability/secrets/grafana-admin.sops.yaml
+# ...then uncomment the entry in secrets/kustomization.yaml
+git add -A && git commit && git push
 ```
 
 Step 3 is not optional and is the most likely place a first run stops. The
