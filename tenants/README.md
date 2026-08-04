@@ -89,4 +89,18 @@ That last line is not bookkeeping. The cluster's tenants stage applies `./tenant
 
 ---
 
-**Not verified against a running cluster.** No manifest in this directory has been applied to one.
+**Verified on a running cluster, 2026-08-04.** A tenant was generated from
+`_template` by following the procedure above verbatim, and serves real traffic:
+its workload is reconciled by its own service account under `restricted` pod
+security, its route attaches to the platform Gateway through `allowedRoutes`,
+and the page is fetched over the public internet with a Let's Encrypt
+certificate the system trust store validates.
+
+Doing that found three defects that made "tenants own Routes" false in practice
+while being true in this file — workloads applied at cluster scope, no listener
+a tenant was permitted to attach to, and a NetworkPolicy selecting a label
+nothing applied. All three are fixed; see LESSONS.md for why each was invisible.
+
+What is still unverified here: the backup CronJob has never restored anything,
+and no tenant has been offboarded by removing its line from
+`kustomization.yaml`.

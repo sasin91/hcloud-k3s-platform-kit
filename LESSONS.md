@@ -490,6 +490,42 @@ word PodSecurity. It is in the DaemonSet's events, and only there.
 > ordering instead of the contents. Check what the level PERMITS, against the
 > thing you are about to run under it.
 
+### A tenancy model is three separate permissions, and missing any one is silent
+
+"Platform owns the Gateway, tenants own Routes" was written down, reviewed, and
+false on a running cluster for three independent reasons. Each was invisible in
+a different way, and none named the thing that was wrong.
+
+**The workloads were applied at cluster scope.** A tenant manifest omitting
+`namespace`, reconciled by a Kustomization with no `targetNamespace`, is
+evaluated cluster-wide -- where a namespaced Role grants nothing. The message
+was `cannot patch resource "httproutes" ... at the cluster scope`, naming a
+resource the Role visibly does allow. It sends you to read the Role, which is
+correct, and to the wrong conclusion.
+
+**There was no listener a tenant could attach to.** The HTTP listener was
+`from: Same` by design; the HTTPS listener that carried the tenant selector was
+commented out pending a certificate issuer. A route attaching to nothing reports
+`Accepted=False` on itself and nothing at all on the Gateway -- so the Gateway
+looks healthy, because from its side nothing happened.
+
+**The gateway namespace never carried the label tenants select on.** Every
+tenant NetworkPolicy allowed ingress from namespaces labelled
+`platform.example.com/role=gateway`, and nothing applied it. The allowance
+matched no namespace, so default-deny stood. This one surfaces as **HTTP 502**,
+after the route is Accepted, with healthy endpoints, Running pods, and correct
+content when curled from inside the namespace. Every object you would inspect
+looks right and the failure reads as a broken application.
+
+> A NetworkPolicy selector naming a label nobody sets is a default-deny with
+> extra steps. The same is true of an RBAC rule at the wrong scope and a
+> listener nobody may attach to: a permission that refers to something absent
+> denies without ever saying so.
+
+The reason all three survived review is that each was individually reasonable,
+and the model only exists in the intersection. **Deploy one real tenant. It is
+the only test that crosses all three.**
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine
