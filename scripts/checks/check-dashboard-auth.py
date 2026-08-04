@@ -112,6 +112,25 @@ def body(check):
         return
 
     for parsed, label, node in scopes:
+        # AN ENCRYPTED SECRET IS NOT AN ABSENT ONE. A fork that follows the
+        # instructions commits the admin credential SOPS-encrypted, so every
+        # field this check looks for is ciphertext. Reading that as "no
+        # credential configured" fails the guardrail for doing exactly the
+        # right thing -- and the only way to make it pass would be to commit
+        # the password in clear.
+        #
+        # What can still be checked is that the release REFERENCES a secret
+        # rather than relying on a chart default, and that is checked where the
+        # release is declared. Here, say plainly that the contents are
+        # unreadable rather than inventing a verdict about them.
+        raw = c.read_text(parsed.path)
+        if "ENC[" in raw and "sops:" in raw:
+            check.note(
+                "%s: SOPS-encrypted, so its contents cannot be inspected here. The "
+                "reference to it is verified where the release is declared" % label
+            )
+            continue
+
         enabled, where = anonymous_setting(node)
         if enabled is True:
             check.boundary(

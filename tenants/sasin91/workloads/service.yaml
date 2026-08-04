@@ -1,0 +1,16 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: site
+spec:
+  # ClusterIP. A tenant never creates a LoadBalancer Service: that would mint a
+  # provider load balancer, billed to the platform, outside the Gateway the
+  # platform owns -- and outside the hostname authorisation that governs it.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: site
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

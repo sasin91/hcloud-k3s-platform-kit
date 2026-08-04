@@ -1,0 +1,39 @@
+# The tenant's guarantees, as one kustomization.
+#
+# This directory is applied by the PLATFORM's reconciliation, not by the
+# tenant's own. That distinction is the whole point: a tenant that could
+# reconcile its own quota, network policy or role binding does not have a
+# boundary, it has a suggestion. See sync.yaml for the reconciliation that
+# does run as the tenant, and README.md for how the two fit together.
+#
+# Copy this directory, replace the tokens, add the copy to the cluster's
+# tenants stage. tenants/_template/README.md has the exact commands.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Declared here as well as in every file. Kustomize's namespace transformer
+# also renames the Namespace object itself, so a mis-replaced token in one
+# file cannot land resources in a namespace the tenant does not own.
+namespace: tenant-sasin91
+
+resources:
+  - namespace.yaml            # the managed label, and the pod security level
+  - resourcequota.yaml        # aggregate ceilings, object counts, storage class
+  - limitrange.yaml           # per-container defaults; without it the quota is aspirational
+  - networkpolicy.yaml        # default-deny both directions, with stated allowances
+  - poddisruptionbudget.yaml  # survives a node drain
+  - rbac.yaml                 # the identity the tenant's reconciliation assumes
+  - backup-cronjob.yaml       # restic, one repository per namespace
+  - sync.yaml                 # the tenant's own Flux reconciliation, under that identity
+
+# Deliberately NOT listed. Both are examples containing placeholder values, and
+# both become real secrets that must be SOPS-encrypted before they are
+# committed. Listing them here would make it possible to apply a placeholder
+# credential by accident.
+#   - backup-secret.example.yaml
+#   - deploy-key-secret.example.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      platform.example.com/tenant: sasin91

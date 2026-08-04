@@ -1,0 +1,33 @@
+---
+# The tenant's claim on a hostname.
+#
+# THIS IS THE OBJECT THE ADMISSION POLICY JUDGES. The hostname below must fall
+# under a domain listed in the namespace's platform.example.com/domains
+# annotation, or the API server refuses this object outright -- before it
+# exists, and before any certificate is requested for it.
+#
+# A route with NO hostnames is refused too. That is not a route claiming
+# nothing: it inherits the listener's hostname, which on a shared gateway means
+# claiming everything the listener serves.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: site
+spec:
+  parentRefs:
+    # The platform's Gateway, in the platform's namespace. Attachment is granted
+    # by that listener's allowedRoutes -- not by a ReferenceGrant, which governs
+    # cross-namespace backendRefs and certificateRefs instead.
+    - name: platform
+      namespace: traefik
+      sectionName: web
+  hostnames:
+    - sasin91.quazye.lol
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: site
+          port: 80

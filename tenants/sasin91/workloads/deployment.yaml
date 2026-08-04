@@ -1,0 +1,134 @@
+---
+# A static site under the tenant contract.
+#
+# EVERY SECURITY FIELD BELOW IS MANDATORY, not defensive style. The tenant
+# namespace enforces pod-security "restricted", and a Deployment missing any one
+# of these is refused at admission -- the Deployment is created, the ReplicaSet
+# is created, and zero pods appear. There is no failing pod to inspect, because
+# no pod is ever made. The only record is in the ReplicaSet's events.
+#
+# The image is the UNPRIVILEGED nginx build. The standard nginx image binds port
+# 80 as root and cannot run here at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: site
+  labels:
+    app.kubernetes.io/name: site
+spec:
+  # Two, to satisfy the PodDisruptionBudget the tenant template generates. One
+  # replica plus a budget requiring one available means a node drain blocks
+  # forever.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: site
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: site
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread across nodes so the disruption budget is meaningful rather than
+      # nominal -- two replicas on one node survive a drain no better than one.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: site
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.29-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Stated, not inherited. The LimitRange would supply defaults, but a
+          # workload that does not declare its own is one whose cost nobody has
+          # thought about.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 10
+          volumeMounts:
+            - name: site
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            # readOnlyRootFilesystem means nginx cannot write its caches or pid.
+            # These are the paths it genuinely needs, and nothing else.
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /tmp
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: site
+          configMap:
+            name: site
+            # Each key is projected back to its real path. ConfigMap KEYS cannot
+            # contain "/", but item PATHS can -- which is the whole reason this
+            # works without a registry.
+            items:
+              - key: about_index.html
+                path: about/index.html
+              - key: apple-touch-icon.png
+                path: apple-touch-icon.png
+              - key: blog_athletos-freebsd_index.html
+                path: blog/athletos-freebsd/index.html
+              - key: blog_freebsd-on-hetzner_index.html
+                path: blog/freebsd-on-hetzner/index.html
+              - key: blog_index.html
+                path: blog/index.html
+              - key: blog_trongate_index.html
+                path: blog/trongate/index.html
+              - key: blog_trongate_mx-transition_index.html
+                path: blog/trongate/mx-transition/index.html
+              - key: cv_index.html
+                path: cv/index.html
+              - key: favicon.png
+                path: favicon.png
+              - key: images_athletos-freebsd_architecture.svg
+                path: images/athletos-freebsd/architecture.svg
+              - key: images_athletos-freebsd_deploy-timeline.svg
+                path: images/athletos-freebsd/deploy-timeline.svg
+              - key: images_athletos-freebsd_footprint.svg
+                path: images/athletos-freebsd/footprint.svg
+              - key: images_freebsd-on-hetzner_header.svg
+                path: images/freebsd-on-hetzner/header.svg
+              - key: images_trongate_trongate.ico
+                path: images/trongate/trongate.ico
+              - key: images_trongate_trongate_logo_trans_bg.png
+                path: images/trongate/trongate_logo_trans_bg.png
+              - key: index.html
+                path: index.html
+              - key: robots.txt
+                path: robots.txt
+              - key: rss.xml
+                path: rss.xml
+              - key: site.6abfc6f72907b372.css
+                path: site.6abfc6f72907b372.css
+              - key: sitemap.xml
+                path: sitemap.xml
+              - key: syntax.79725b7b1bbe3861.css
+                path: syntax.79725b7b1bbe3861.css

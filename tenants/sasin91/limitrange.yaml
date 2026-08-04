@@ -1,0 +1,66 @@
+# Per-container defaults. Without this file the quota next door is aspirational.
+#
+# The mechanism, stated exactly, because the shorthand version is misleading in
+# both directions:
+#
+#   - A container that declares no cpu request, in a namespace whose quota
+#     constrains requests.cpu, is REJECTED. Not throttled, not defaulted —
+#     rejected, with a message about the quota rather than about the container.
+#     A template that ships a quota and no limit range therefore breaks the
+#     first pod anyone deploys, and reads as a broken template.
+#
+#   - A container that declares no cpu limit, for a resource the quota does not
+#     constrain, RUNS UNBOUNDED. It competes with every other pod on its node
+#     for as much as it can take, and the namespace's stated ceiling has
+#     nothing to do with what it actually consumes.
+#
+# A LimitRange resolves both, at admission, by writing the missing values into
+# the pod spec before the quota is evaluated. That is why it is generated with
+# the namespace rather than recommended in documentation: a guarantee that has
+# to be remembered is a guarantee that is absent.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: tenant
+  namespace: tenant-sasin91
+spec:
+  limits:
+    - type: Container
+
+      # Applied when a container declares no limit.
+      default:
+        cpu: 500m
+        memory: 512Mi
+
+      # Applied when a container declares no request. Deliberately far below
+      # the default limit: requests are what the scheduler reserves, and a
+      # generous default request wastes the cluster on idle containers.
+      defaultRequest:
+        cpu: 50m
+        memory: 128Mi
+
+      # Ceilings and floors per container. `max` must stay at or below the
+      # namespace quota's limits.* entries, or a pod can be admitted here and
+      # rejected there, which produces two different error messages for one
+      # cause.
+      max:
+        cpu: "2"
+        memory: 4Gi
+      min:
+        cpu: 10m
+        memory: 32Mi
+
+      # Note what is NOT defaulted: ephemeral-storage. A container writing
+      # unboundedly to its writable layer can still evict itself and its
+      # neighbours off a node. Set a default here if tenant workloads write to
+      # local disk; the reason it is not set by default is that a low ceiling
+      # kills image-heavy workloads at runtime rather than at admission.
+
+    - type: PersistentVolumeClaim
+      max:
+        storage: 50Gi
+      min:
+        # The provider's block volumes have a minimum size of their own, and a
+        # claim below it fails at provisioning time rather than at admission.
+        # Rejecting it here turns a pending PVC into a legible error.
+        storage: 10Gi

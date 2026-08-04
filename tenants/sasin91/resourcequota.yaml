@@ -1,0 +1,87 @@
+# Aggregate ceilings for the namespace.
+#
+# A quota is a capacity boundary, not a security boundary. It stops one tenant
+# consuming the cluster by accident; it does not stop anything deliberate that
+# fits inside the numbers. Treat an absent quota as a gap to close and an
+# absent privilege boundary as a hole to stop, and do not report them the same
+# way.
+#
+# The numbers below are a small tenant. They are meant to be edited. What must
+# not be edited away is the SHAPE: a ceiling on requests, a ceiling on limits,
+# a ceiling on storage, and a ceiling on object counts. Omitting any one of
+# them leaves a way to exhaust something.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant
+  namespace: tenant-sasin91
+spec:
+  hard:
+    # Requests are what the scheduler subtracts from the cluster. This is the
+    # number that decides how much of the cluster this tenant can hold.
+    requests.cpu: "2"
+    requests.memory: 4Gi
+
+    # Limits are what the tenant can burst to. Capping limits as well as
+    # requests is what stops a namespace of 50m-request containers from
+    # oversubscribing a node into eviction under load.
+    limits.cpu: "4"
+    limits.memory: 8Gi
+
+    # Storage, in aggregate and by claim count. Both matter: ten claims of 1Gi
+    # and one claim of 10Gi cost the same in bytes and very differently in
+    # volume attachments, which are a per-node limit on this provider.
+    requests.storage: 50Gi
+    persistentvolumeclaims: "4"
+
+    # Storage class assignment.
+    #
+    # Core Kubernetes has no per-namespace default storage class — the default
+    # is a cluster-wide flag on the StorageClass object. The only mechanism
+    # that binds a namespace to a class is a quota that refuses claims on the
+    # other one, which is what these two lines do:
+    #
+    #   - zero claims permitted on the provider's deleting default, so a PVC
+    #     that names it (or inherits it as the cluster default) is rejected;
+    #   - the tenant's whole storage allowance sits on the retaining class.
+    #
+    # A rejected claim is a legible failure. A claim silently landing on a
+    # class whose reclaim policy is Delete is a silent one, discovered when the
+    # PVC is removed and the data goes with it.
+    #
+    # The class names are declared once, in platform/configs/storage, and
+    # referenced here. If they are renamed there, this file is one of the
+    # places that must follow — a value consumed twice is a value that will
+    # eventually disagree with itself.
+    hcloud-volumes.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
+    hcloud-volumes-retain.storageclass.storage.k8s.io/requests.storage: 50Gi
+    hcloud-volumes-retain.storageclass.storage.k8s.io/persistentvolumeclaims: "4"
+
+    # Object counts. These are the ceilings that stop a crash-looping
+    # controller or a runaway generator from filling etcd, which is a
+    # cluster-wide failure caused inside one namespace.
+    pods: "20"
+    services: "5"
+    secrets: "20"
+    configmaps: "20"
+    count/deployments.apps: "10"
+    count/statefulsets.apps: "5"
+    count/jobs.batch: "10"
+    count/cronjobs.batch: "5"
+
+    # A Service of type LoadBalancer provisions a load balancer at the
+    # provider and bills for it, on the platform's account, from inside a
+    # tenant namespace. A NodePort opens a port on every node, outside the
+    # gateway and outside the hostname authorisation policy.
+    #
+    # Both are set to zero because both are ways for a tenant to reach past the
+    # platform's ingress. A tenant that genuinely needs a raw TCP listener gets
+    # one allocated by the platform, on a port pair the platform tracks.
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+
+    # Routes are capped as well as authorised. The admission policy decides
+    # WHICH hostnames this tenant may claim; this decides how many claims it
+    # may make, which is the part that protects the certificate issuer's shared
+    # rate limits.
+    count/httproutes.gateway.networking.k8s.io: "5"
