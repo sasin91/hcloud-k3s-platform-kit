@@ -20,7 +20,7 @@ spec:
     # cross-namespace backendRefs and certificateRefs instead.
     - name: platform
       namespace: traefik
-      sectionName: web
+      sectionName: http
   hostnames:
     - sasin91.quazye.lol
   rules:
