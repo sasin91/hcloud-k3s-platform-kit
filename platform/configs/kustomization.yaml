@@ -12,7 +12,6 @@ kind: Kustomization
 # lives under clusters/, because a fork names its cluster once.
 resources:
   # Needs cert-manager's definitions and its webhook to be answering.
-  - cluster-issuers.yaml
   # Needs the Gateway API definitions and the GatewayClass the ingress creates.
   - gateway.yaml
   # Needs the Plan definition from platform/controllers/crds/.

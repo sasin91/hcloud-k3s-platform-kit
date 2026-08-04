@@ -62,87 +62,98 @@ spec:
     # -----------------------------------------------------------------------
     # Port 443.
     # -----------------------------------------------------------------------
-    - name: https
-      protocol: HTTPS
-      port: 8443
-      # CHANGE ME. One listener serves one hostname, so onboarding a tenant
-      # hostname means adding a listener here — a platform action, deliberately.
-      #
-      # This does not scale to many tenants, and the honest answer to that is
-      # the wildcard listener commented out below, not a workaround. Wildcards
-      # need DNS-01; see cluster-issuers.yaml.
-      hostname: apps.example.com
-      tls:
-        mode: Terminate
-        certificateRefs:
-          # Same namespace as the Gateway, so no ReferenceGrant is involved.
-          # cert-manager creates this Secret; it does not exist until the first
-          # certificate is issued, and the listener stays Programmed=False until
-          # then. That is the expected first-boot state, not a fault.
-          - name: platform-tls
-            kind: Secret
-            group: ""
-      allowedRoutes:
-        namespaces:
-          # Only namespaces carrying the tenant label may attach. `All` would
-          # mean any namespace in the cluster — including one created by
-          # something that is not the tenant template — can publish on the
-          # platform's addresses.
-          #
-          # This is the same label the hostname admission policy binds on (see
-          # configs/admission/). The two must agree: a namespace that can attach
-          # a route but is outside the policy's binding is one that can claim any
-          # hostname it likes.
-          from: Selector
-          selector:
-            matchLabels:
-              platform.example.com/managed: tenant
-
-    # -----------------------------------------------------------------------
-    # A wildcard listener. Requires DNS-01. Uncomment both halves together.
-    # -----------------------------------------------------------------------
-    # This replaces one-listener-per-hostname with one listener for every
-    # subdomain, which is what makes tenant onboarding a tenant-side action
-    # rather than an edit to this file. The certificate cannot be obtained over
-    # HTTP-01 — that is a property of the ACME protocol, not a configuration —
-    # so a DNS-01 issuer must exist first and this Gateway's annotation must
-    # point at it.
+    # ------------------------------------------------------------------
+    # HTTPS LISTENER — COMMENTED UNTIL YOU HAVE A CERTIFICATE ISSUER.
     #
-    # - name: https-wildcard
+    # A listener referencing a Secret that does not exist makes the whole
+    # Gateway Accepted=False ("All Listeners must be valid"), which under
+    # wait: true blocks this Kustomization, which blocks observability and
+    # tenants behind it. One unobtainable certificate stops the platform.
+    #
+    # Verified on a live cluster. Enable this together with an issuer from
+    # platform/configs/optional/ once you have set a real contact address.
+    # ------------------------------------------------------------------
+    # - name: https
     #   protocol: HTTPS
     #   port: 8443
-    #   hostname: "*.example.com"
+    #   # CHANGE ME. One listener serves one hostname, so onboarding a tenant
+    #   # hostname means adding a listener here — a platform action, deliberately.
+    #   #
+    #   # This does not scale to many tenants, and the honest answer to that is
+    #   # the wildcard listener commented out below, not a workaround. Wildcards
+    #   # need DNS-01; see cluster-issuers.yaml.
+    #   hostname: apps.example.com
     #   tls:
     #     mode: Terminate
     #     certificateRefs:
-    #       - name: platform-wildcard-tls
+    #       # Same namespace as the Gateway, so no ReferenceGrant is involved.
+    #       # cert-manager creates this Secret; it does not exist until the first
+    #       # certificate is issued, and the listener stays Programmed=False until
+    #       # then. That is the expected first-boot state, not a fault.
+    #       - name: platform-tls
     #         kind: Secret
     #         group: ""
     #   allowedRoutes:
     #     namespaces:
+    #       # Only namespaces carrying the tenant label may attach. `All` would
+    #       # mean any namespace in the cluster — including one created by
+    #       # something that is not the tenant template — can publish on the
+    #       # platform's addresses.
+    #       #
+    #       # This is the same label the hostname admission policy binds on (see
+    #       # configs/admission/). The two must agree: a namespace that can attach
+    #       # a route but is outside the policy's binding is one that can claim any
+    #       # hostname it likes.
     #       from: Selector
     #       selector:
     #         matchLabels:
     #           platform.example.com/managed: tenant
----
-# Redirect everything arriving on port 80 to HTTPS.
-#
-# WHY THIS IS A ROUTE AND NOT AN ENTRYPOINT SETTING. A redirect configured on
-# the proxy's entrypoint rewrites every request on port 80 unconditionally,
-# including `/.well-known/acme-challenge/...`, so certificate issuance fails
-# permanently and looks like a certificate problem rather than a redirect
-# problem. As a route it coexists with issuance: cert-manager's challenge route
-# carries the challenge hostname and an exact path match, and Gateway API
-# resolves conflicts by specificity — a hostname beats no hostname, an exact
-# path beats a prefix — so the challenge is answered and everything else is
-# redirected.
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: http-to-https
-  namespace: traefik
-spec:
-  parentRefs:
+    #
+    # # -----------------------------------------------------------------------
+    # # A wildcard listener. Requires DNS-01. Uncomment both halves together.
+    # # -----------------------------------------------------------------------
+    # # This replaces one-listener-per-hostname with one listener for every
+    # # subdomain, which is what makes tenant onboarding a tenant-side action
+    # # rather than an edit to this file. The certificate cannot be obtained over
+    # # HTTP-01 — that is a property of the ACME protocol, not a configuration —
+    # # so a DNS-01 issuer must exist first and this Gateway's annotation must
+    # # point at it.
+    # #
+    # # - name: https-wildcard
+    # #   protocol: HTTPS
+    # #   port: 8443
+    # #   hostname: "*.example.com"
+    # #   tls:
+    # #     mode: Terminate
+    # #     certificateRefs:
+    # #       - name: platform-wildcard-tls
+    # #         kind: Secret
+    # #         group: ""
+    # #   allowedRoutes:
+    # #     namespaces:
+    # #       from: Selector
+    # #       selector:
+    # #         matchLabels:
+    # #           platform.example.com/managed: tenant
+    # 
+    # direct everything arriving on port 80 to HTTPS.
+    # 
+    # Y THIS IS A ROUTE AND NOT AN ENTRYPOINT SETTING. A redirect configured on
+    # e proxy's entrypoint rewrites every request on port 80 unconditionally,
+    # cluding `/.well-known/acme-challenge/...`, so certificate issuance fails
+    # rmanently and looks like a certificate problem rather than a redirect
+    # oblem. As a route it coexists with issuance: cert-manager's challenge route
+    # rries the challenge hostname and an exact path match, and Gateway API
+    # solves conflicts by specificity — a hostname beats no hostname, an exact
+    # th beats a prefix — so the challenge is answered and everything else is
+    # directed.
+    # ersion: gateway.networking.k8s.io/v1
+    # : HTTPRoute
+    # data:
+    # me: http-to-https
+    # mespace: traefik
+    # :
+    # rentRefs:
     - name: platform
       # Attach to the HTTP listener specifically. Without sectionName the route
       # attaches to every listener it is compatible with, which would put a
