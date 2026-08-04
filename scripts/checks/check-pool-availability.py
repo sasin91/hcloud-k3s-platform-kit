@@ -219,6 +219,12 @@ def declared_pools(root):
                         "server_type": server_type,
                         "location": location,
                         "location_reason": location_source,
+                        # WHERE THE VALUE CAME FROM, which is often not where the
+                        # pool is declared. A tfvars file outranks a variable
+                        # default, so a failure message naming only the
+                        # declaration site sends you to edit a file that does not
+                        # contain the offending value.
+                        "type_source": type_source,
                         "path": path,
                         "line": obj.get("_line"),
                     }
@@ -286,6 +292,9 @@ def body(check):
 
     for pool in pools:
         label = "%s pool %r" % (pool["list"], pool["name"])
+        origin = pool.get("type_source")
+        if origin and origin != pool["path"]:
+            label += " (type from %s)" % origin
         type_name = str(pool["server_type"]).lower()
         location = pool["location"]
 

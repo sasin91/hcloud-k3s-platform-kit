@@ -154,7 +154,10 @@ variable "control_plane_server_type" {
     supported-but-unavailable type plans and applies cleanly.
   EOT
   type        = string
-  default     = "cx33"
+  # Was cx33 until 2026-08-04, when the entire shared-Intel (cx) line went
+  # unavailable in every fsn1 datacentre. cpx22 is 2 vCPU / 4 GB at EUR 24.36
+  # gross -- adequate for a control plane, which schedules rather than works.
+  default     = "cpx22"
 }
 
 variable "agent_location" {
@@ -166,7 +169,9 @@ variable "agent_location" {
 variable "agent_server_type" {
   description = "Instance type for the fixed agent nodepool. CHECK CURRENT AVAILABILITY in agent_location, not merely support."
   type        = string
-  default     = "cx43"
+  # Was cx43. See control_plane_server_type: the cx line is gone from fsn1.
+  # cpx32 is 4 vCPU / 8 GB at EUR 44.36 gross.
+  default     = "cpx32"
 }
 
 variable "agent_count" {
@@ -195,12 +200,17 @@ variable "autoscaler_server_type" {
     reports success right up until the provider refuses.
 
     Recorded 2026-08-03: the cost-optimised line was present in ONE location
-    while the pricier lines were present in all of them. That is why the
-    fallback pool in main.tf differs by location and type, and it is a dated
-    observation, not a permanent property.
+    while the pricier lines were present in all of them.
+
+    Recorded 2026-08-04, ONE DAY LATER: that line was gone from fsn1 entirely --
+    not the type, the whole cx family, across all three datacentres. The default
+    here moved cx43 -> cpx32 as a result. Both of these are dated observations,
+    and the speed with which the first became wrong is the entire argument for
+    running scripts/checks/check-pool-availability.py before every apply rather
+    than trusting any value committed to this file, including this one.
   EOT
   type        = string
-  default     = "cx43"
+  default     = "cpx32"
 }
 
 variable "autoscaler_max_nodes" {
