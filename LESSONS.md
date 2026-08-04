@@ -446,6 +446,27 @@ which is exactly the kind of step that gets skipped.
 > create it". A configuration validated against the first still fails on the
 > second, and neither is visible in the plan.
 
+### Shrinking a quorum-based control plane with IaC destroys the cluster
+
+Infrastructure-as-code manages servers. It does not manage etcd membership.
+Reducing a three-node control plane to one is, to the tool, three server
+resources becoming one -- a diff it applies without comment. To etcd it is the
+loss of two of three voters, and the survivor can never again reach a majority.
+The API server does not come back.
+
+What the tool reports is a provisioner timeout on a post-install step, exit
+status 124. Nothing in that message says quorum, etcd, or control plane. The
+cluster is unrecoverable by the time you read it, and re-running `apply` cannot
+fix it because there is no working API server for the post-install step to talk
+to.
+
+Growing is safe and shrinking is not, which makes this asymmetric in a way plans
+do not show: both directions render as a count changing.
+
+> A replica count that a consensus protocol depends on is not a number in your
+> configuration -- it is cluster state that happens to be spelled the same way.
+> Removing members is an operation with a protocol, not a diff.
+
 ## Two that are about people
 
 ### The first success is what convinces everyone the pattern is fine

@@ -78,6 +78,13 @@ python scripts/checks/check-pool-availability.py
 #     them. Primary IPs are quota'd separately and independently.
 #
 #     Budget the ceiling as: 3 control planes + agent_count + autoscaler_max_nodes.
+#
+#     AND GET THE CONTROL PLANE COUNT RIGHT THE FIRST TIME. Growing it later is
+#     safe. SHRINKING IT DESTROYS THE CLUSTER: OpenTofu removes the servers, etcd
+#     membership is not something it manages, and a three-member cluster that
+#     loses two members can never reach quorum again. The API server does not
+#     come back, and what you are shown is a provisioner timeout that mentions
+#     none of this. Verified the hard way on this repository's own cluster.
 
 # 1. Generate an object-storage credential in the provider console.
 #    This step cannot be automated — the provider CLI has no object-storage commands.
