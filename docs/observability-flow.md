@@ -111,6 +111,79 @@ is unreachable, and sampling policy. Tail-based sampling — keeping a trace
 *because* it errored — is only possible somewhere that sees the whole trace,
 which no single application does.
 
+The same argument applies to metrics, through a flag that is easy to leave off
+because nothing complains when it is: the remote-write exporter sets
+`resource_to_telemetry_conversion`, which carries the `k8s.*` resource
+attributes onto each series as labels. Without it a metric arrives not knowing
+which pod produced it, and the p99 you are looking at cannot be lined up with
+the trace from the request that caused it.
+
+### Why a Deployment and not a DaemonSet
+
+A DaemonSet would let a workload export to its own node and skip a hop. It would
+also mean the tenant NetworkPolicy has to permit egress to **every node
+address** rather than to one Service — a materially wider hole for a latency
+saving nobody has measured. The collector is `mode: deployment` for that reason
+and no other; if you measure the hop and it matters to you, the trade is
+legible and yours to reverse.
+
+## What it costs
+
+Cluster at rest, one tenant serving a static site, from
+[verification-stats-2026-08-04.md](verification-stats-2026-08-04.md):
+
+| | Pods | CPU | Memory |
+|---|---|---|---|
+| `observability` | 19 | 141m | 2,858 Mi |
+| **platform total** | 43 | **194m** | **4,526 Mi** |
+| the tenant application | 2 | 2m | 8 Mi |
+
+Observability is **63% of the platform's memory**. Metrics, logs and traces cost
+more than everything that delivers, routes, secures and upgrades the cluster put
+together.
+
+The collector is the cheap part of that — it requests 100m CPU and 192 Mi,
+capped at 512 Mi. The stores are where the memory goes, and they would cost
+roughly the same if every application exported to them directly. **The collector
+is not what makes observability expensive; it is what makes the expense buy
+something.**
+
+That cost is also close to fixed. The same 2,858 Mi carries the second tenant
+and the tenth, which is why this shape makes sense with several tenants and not
+with one.
+
+The cheapest reduction available is not the collector. It is the **161,507
+active time series** this cluster carries while running one static site, of
+which two control-plane histograms — `apiserver_request_duration_seconds_bucket`
+and `etcd_request_duration_seconds_bucket` — are **27%, unqueried**. Dropping or
+aggregating those buckets is a few lines in one file. This kit does not make
+that decision for you: "the control plane latency histogram is not worth
+keeping" is true here and might be exactly what you need on the day your API
+server is the problem.
+
+## What has not been proven
+
+Stated plainly, because the diagram above is more convincing than the evidence
+behind parts of it.
+
+- **A trace across more than one service.** Exactly one service on the
+  verification cluster ever emitted a span: `traefik`. The tenant was a static
+  site with no SDK. The load-balancer → proxy → handler → database trace
+  described above is the shape the pipeline produces, not something observed
+  here.
+- **Tail-based sampling.** Never configured. See below.
+- **The collector under real load.** `memory_limiter` has never shed anything
+  anyone was watching. Its thresholds are the shape of the answer, not a tuned
+  number.
+- **Log-to-trace correlation end to end.** Container stdout is collected
+  separately, by Vector, and a stdout line does not carry the trace ID that
+  produced it. Only logs emitted through the SDK do, and nothing here emits
+  those yet.
+
+That last one is the honest gap. The `k8s.*` labels line traces and logs up by
+*workload*, which is most of the value. Lining them up by *request* needs the
+application to log through the SDK.
+
 ## Instrumenting an application
 
 The collector accepts OTLP on gRPC `4317` and HTTP `4318`. Everything below is

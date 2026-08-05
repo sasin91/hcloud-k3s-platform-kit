@@ -8,6 +8,7 @@ Every non-obvious claim is cited to primary documentation. Where something could
 
 | Page | Answers |
 |---|---|
+| [observability-flow.md](observability-flow.md) | How an app gets deployed and how its telemetry gets back. Why a collector sits between the applications and the stores rather than each app exporting direct, why the processor order is load-bearing, how to instrument an application, what the whole stack costs (63% of the platform's memory) — and the four things about it that have not been proven. |
 | [websockets.md](websockets.md) | Do WebSockets work through the ingress? (Yes, transparently.) Then: idle and read/write timeouts, sticky sessions, a CDN's request-duration ceiling, buffering middleware that breaks streaming — and why a reverse proxy is a shared restart domain, with the criteria for routing around it entirely. |
 | [waf-and-cdn.md](waf-and-cdn.md) | What changes when you put a proxying CDN in front of the cluster: why it forces DNS-01 certificate challenges, how to trust forwarded client addresses without creating a spoofing vector, why the origin firewall must be locked to the CDN's ranges *and* why that alone is not enough, and self-hosted WAF middleware versus the CDN's own. Includes what you give up by proxying. |
 

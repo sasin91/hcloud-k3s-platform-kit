@@ -50,6 +50,14 @@ State wants versioning kept indefinitely. Periodic snapshots want expiry, becaus
 
 The failure is silent, discovered only when recovery is attempted — and what it destroys is the recovery path.
 
+### A health check answers "is this running", not "is anything using it"
+
+An earlier version of this kit installed Tempo, probed it for readiness, scraped its metrics and alerted if it went down. Nothing ever sent it a span.
+
+Every check was green. The store was up, responsive, and had received no data at all — which from the outside is indistinguishable from a quiet week. The two diverge silently, and the liveness signal is the one people trust.
+
+Where a component exists to receive data, the check has to be "did anything land", not "is it answering".
+
 ---
 
 ## Capacity
